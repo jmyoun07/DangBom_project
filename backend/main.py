@@ -81,7 +81,15 @@ app.include_router(diagnostics.router)
 
 @app.get("/health")
 def health_check():
-    return {"status": "ok", "service": "DB-care API", "version": "2.1.6"}
+    # instance_id: Tauri shell 이 spawn 시 DBCARE_INSTANCE_ID 환경변수로 주입.
+    # 점유된 8765 포트의 backend 가 자기(현 Tauri) 인스턴스인지 좀비/타서버인지
+    # 구별하기 위해 echo. PUBLIC_PATHS 라 미인증으로도 호출 가능.
+    return {
+        "status": "ok",
+        "service": "DB-care API",
+        "version": "2.1.6",
+        "instance_id": os.environ.get("DBCARE_INSTANCE_ID"),
+    }
 
 
 @app.on_event("startup")
