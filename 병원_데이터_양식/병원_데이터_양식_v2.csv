@@ -1,0 +1,2 @@
+﻿name,chart_no,phone,dob,exam_date,sex,DM_diagnosis_age,dm_medication,insulin_medication,HE_glu,HE_HbA1c,c_peptide,HE_ast,HE_alt,HE_crea,HE_chol,HE_TG,HE_HDL_st2,LDL,SBP,DBP,HE_ht,HE_wt,HE_Upro,HE_Uglu,HE_Ubld,urine_bil,urine_uro,urine_ket,urine_nit,urine_ph,urine_sg,smoking,drinking,exercise,sleep_hours
+김영호,CN-2026-0001,010-1111-2222,1960-05-12,2026-04-22,1,48,1,1,168,8.4,1.8,35,42,1.35,210,220,38,128,148,92,168,78.5,3,4,1,1,1,1,0,5.5,1.02,1,1,0,5.5

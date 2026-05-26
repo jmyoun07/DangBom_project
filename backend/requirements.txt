@@ -1,0 +1,14 @@
+fastapi==0.115.0
+uvicorn==0.30.6
+sqlalchemy==2.0.35
+pydantic==2.9.2
+python-multipart==0.0.12
+joblib==1.4.2
+scikit-learn==1.5.2
+pandas==2.2.3
+numpy>=1.26.0,<2.2
+python-dotenv==1.0.1
+imbalanced-learn==0.12.4
+xgboost==2.1.1
+lightgbm==4.5.0
+catboost==1.2.7

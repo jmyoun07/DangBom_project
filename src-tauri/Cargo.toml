@@ -1,0 +1,34 @@
+[package]
+name = "dbcare"
+version = "2.1.6"
+description = "DB-care — 당뇨 합병증 예측 프로그램"
+authors = ["DB-care"]
+license = ""
+repository = ""
+edition = "2021"
+rust-version = "1.77.2"
+
+[lib]
+name = "dbcare_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.6.1", features = [] }
+
+[dependencies]
+serde_json = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+log = "0.4"
+getrandom = "0.3"
+tauri = { version = "2.11.1", features = [] }
+tauri-plugin-log = "2"
+# 단일 인스턴스 락 — 두 번째 실행 시 기존 창에 포커스만 주고 즉시 종료
+tauri-plugin-single-instance = "2"
+# Python sidecar HTTP 헬스체크
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
+# 백엔드 시작 진단 — 환자 DB 경로 등
+dirs = "5"
+
+[features]
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]

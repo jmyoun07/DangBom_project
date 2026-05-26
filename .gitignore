@@ -1,0 +1,78 @@
+# ───────── Python ─────────
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+.env.local
+*.pyo
+
+# ───────── Node / Frontend ─────────
+node_modules/
+frontend/dist/
+frontend/.vite/
+
+# ───────── Tauri / Rust ─────────
+src-tauri/target/
+src-tauri/Cargo.lock.bak
+# Prebuilt PyInstaller sidecar (GitHub Actions가 새로 만듬)
+src-tauri/resources/dbcare-backend/
+src-tauri/resources/backend/
+src-tauri/gen/schemas/
+
+# ───────── PyInstaller / Build artifacts ─────────
+build/
+dist/
+*.spec.bak
+catboost_info/
+
+# ───────── Runtime DB (PHI 가능성) ─────────
+backend/dbcare.db
+backend/dbcare.db-journal
+*.sqlite
+*.sqlite3
+
+# ───────── Logs ─────────
+*.log
+codex-*.log
+codex_*.log
+codex_*.csv
+codex_v*_output*.log
+
+# ───────── Codex / Agent task scratch ─────────
+codex_task*.md
+codex_task*.txt
+codex_review*.md
+codex_c*_changes.md
+
+# ───────── 대용량/민감 데이터 (KNHANES, 백업) ─────────
+원시데이터/
+_backup_v1.0.0/
+*.pdf
+*.docx
+
+# ───────── ML 학습 데이터셋 (CSV 원본 제외 — 모델 .pkl 은 포함) ─────────
+망막병증/development.csv
+망막병증/validation.csv
+신장질환/development.csv
+신장질환/validation.csv
+심혈관/development.csv
+심혈관/validation.csv
+공통_전처리/audit_19_patients_full.csv
+공통_전처리/audit_19_patients_results.csv
+
+# ───────── OS / Editor ─────────
+.DS_Store
+.vscode/
+.idea/
+Thumbs.db
+*.swp
+*~
+
+# ───────── Misc ─────────
+proxy_distribution.txt
+age_distribution.txt
+분포_*.txt
+codex_v213_full19_prediction_probe.csv
+*.iss.bak

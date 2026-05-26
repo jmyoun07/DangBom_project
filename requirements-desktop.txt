@@ -1,0 +1,8 @@
+# DB-care Desktop build-time dependencies
+# (install on top of backend/requirements.txt)
+
+# Native window wrapper (Windows uses WebView2)
+pywebview==5.3.2
+
+# exe packager
+pyinstaller==6.11.1

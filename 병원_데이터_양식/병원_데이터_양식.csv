@@ -1,0 +1,4 @@
+﻿name,chart_no,phone,dob,exam_date,sex,DM_diagnosis_age,dm_medication,insulin_medication,HE_glu,HE_HbA1c,c_peptide,HE_ast,HE_alt,HE_crea,HE_chol,HE_TG,HE_HDL_st2,LDL,SBP,DBP,HE_ht,HE_wt,HE_Upro,HE_Uglu,HE_Ubld,urine_bil,urine_uro,urine_ket,urine_nit,urine_ph,urine_sg,smoking,drinking,exercise,sleep_hours
+김영호,CN-2026-0001,010-1111-2222,1960-05-12,2026-04-20,1,48,1,1,168,8.4,1.8,35,42,1.35,210,220,38,128,148,92,168,78.5,3,4,1,1,1,1,0,5.5,1.02,1,1,0,5.5
+이수민,CN-2026-0002,010-3333-4444,1968-11-08,2026-04-20,2,51,1,0,132,7.1,2.6,26,28,0.85,192,158,52,108,128,82,160,62,1,1,1,1,1,1,0,6,1.018,0,0,1,7
+박준서,CN-2026-0003,010-5555-6666,1975-02-22,2026-04-20,1,48,1,0,118,6.5,3.1,22,25,0.95,182,120,58,100,120,76,172,67.5,1,1,1,1,1,1,0,6.5,1.015,0,0,1,7.5

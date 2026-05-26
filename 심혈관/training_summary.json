@@ -1,0 +1,210 @@
+{
+  "version": "v2.2-debias",
+  "disease": "CVD",
+  "n_trials": 150,
+  "elapsed_minutes": 17.81,
+  "selected_model": "EasyEnsemble",
+  "final_threshold": 0.5463436084218423,
+  "threshold_method": "youden",
+  "final_val_metrics": {
+    "threshold": 0.5463436084218423,
+    "auc": 0.7608441680798944,
+    "sensitivity": 0.6666666666666666,
+    "specificity": 0.7032786885245902,
+    "precision": 0.24267782426778242,
+    "f1": 0.3558282208588957,
+    "accuracy": 0.6987087517934003,
+    "npv": 0.9366812227074236,
+    "tp": 58,
+    "tn": 429,
+    "fp": 181,
+    "fn": 29
+  },
+  "comparison": [
+    {
+      "model": "XGBoost",
+      "oof_auc": 0.6632628424535938,
+      "val_auc": 0.6989636329376295,
+      "val_sensitivity": 0.896551724137931,
+      "val_specificity": 0.4065573770491803,
+      "val_f1": 0.29601518026565465
+    },
+    {
+      "model": "LightGBM",
+      "oof_auc": 0.6388241894022241,
+      "val_auc": 0.6550216694931223,
+      "val_sensitivity": 0.7701149425287356,
+      "val_specificity": 0.48032786885245904,
+      "val_f1": 0.28450106157112526
+    },
+    {
+      "model": "CatBoost",
+      "oof_auc": 0.6549118745650537,
+      "val_auc": 0.6955907292255511,
+      "val_sensitivity": 0.9080459770114943,
+      "val_specificity": 0.3918032786885246,
+      "val_f1": 0.2942271880819367
+    },
+    {
+      "model": "Stacking",
+      "oof_auc": 0.6636865451894355,
+      "val_auc": 0.7071415112116073,
+      "val_sensitivity": 0.9310344827586207,
+      "val_specificity": 0.3704918032786885,
+      "val_f1": 0.29347826086956524
+    },
+    {
+      "model": "EasyEnsemble",
+      "oof_auc": 0.6951754697419439,
+      "val_auc": 0.7608441680798944,
+      "val_sensitivity": 0.6666666666666666,
+      "val_specificity": 0.7032786885245902,
+      "val_f1": 0.3558282208588957
+    }
+  ],
+  "best_params": {
+    "xgb": {
+      "n_estimators": 341,
+      "max_depth": 3,
+      "learning_rate": 0.07495168752654377,
+      "subsample": 0.8529743908639976,
+      "colsample_bytree": 0.5205844123365094,
+      "min_child_weight": 2.280594186550848,
+      "gamma": 2.913665811502035,
+      "reg_alpha": 0.00030062999406609085,
+      "reg_lambda": 1.6656576418376525
+    },
+    "lgb": {
+      "n_estimators": 569,
+      "num_leaves": 104,
+      "max_depth": 3,
+      "learning_rate": 0.18215703216002252,
+      "feature_fraction": 0.5001225448054742,
+      "bagging_fraction": 0.9108318843514354,
+      "bagging_freq": 2,
+      "min_child_samples": 56,
+      "reg_alpha": 0.00034748424700054253,
+      "reg_lambda": 0.47763250172370264
+    },
+    "cb": {
+      "iterations": 364,
+      "depth": 5,
+      "learning_rate": 0.08916609652973553,
+      "l2_leaf_reg": 21.740180699153715,
+      "border_count": 96,
+      "bagging_temperature": 4.828929035208999
+    }
+  },
+  "n_features": 38,
+  "features": [
+    "age",
+    "sex",
+    "DM_duration",
+    "DM_diagnosis_age",
+    "DM_medication",
+    "insulin_medication",
+    "HE_glu",
+    "HE_HbA1c",
+    "TyG_index",
+    "HE_chol",
+    "HE_HDL_st2",
+    "HE_TG",
+    "LDL_calc",
+    "non_HDL",
+    "HE_crea",
+    "eGFR",
+    "SBP",
+    "DBP",
+    "pulse_pressure",
+    "hypertension",
+    "HE_BMI",
+    "HE_ht",
+    "HE_wt",
+    "HE_ast",
+    "HE_alt",
+    "HE_Upro_pos",
+    "HE_Uglu_pos",
+    "HE_Ubld_pos",
+    "HE_Ubil_pos",
+    "HE_Uro_abn",
+    "HE_Uket_pos",
+    "HE_Unitr_b",
+    "HE_Uph",
+    "HE_Usg",
+    "smoking",
+    "drinking",
+    "exercise",
+    "sleep_7h"
+  ],
+  "feature_groups": {
+    "인구통계": [
+      "age",
+      "sex"
+    ],
+    "당뇨 관련": [
+      "DM_duration",
+      "DM_diagnosis_age",
+      "DM_medication",
+      "insulin_medication"
+    ],
+    "혈당·C-peptide": [
+      "HE_glu",
+      "HE_HbA1c"
+    ],
+    "인슐린 저항성(파생)": [
+      "TyG_index"
+    ],
+    "지질": [
+      "HE_chol",
+      "HE_HDL_st2",
+      "HE_TG",
+      "LDL_calc",
+      "non_HDL"
+    ],
+    "신장 기능": [
+      "HE_crea",
+      "eGFR"
+    ],
+    "혈압": [
+      "SBP",
+      "DBP",
+      "pulse_pressure",
+      "hypertension"
+    ],
+    "신체 계측": [
+      "HE_BMI",
+      "HE_ht",
+      "HE_wt"
+    ],
+    "간효소": [
+      "HE_ast",
+      "HE_alt"
+    ],
+    "소변(확장)": [
+      "HE_Upro_pos",
+      "HE_Uglu_pos",
+      "HE_Ubld_pos",
+      "HE_Ubil_pos",
+      "HE_Uro_abn",
+      "HE_Uket_pos",
+      "HE_Unitr_b",
+      "HE_Uph",
+      "HE_Usg"
+    ],
+    "생활습관": [
+      "smoking",
+      "drinking",
+      "exercise",
+      "sleep_7h"
+    ]
+  },
+  "debias": {
+    "features": [
+      "insulin_medication",
+      "DM_medication"
+    ],
+    "monotone_constraint": "+1",
+    "feature_weight": 0.5,
+    "sample_weight_cap": 0.7
+  }
+}

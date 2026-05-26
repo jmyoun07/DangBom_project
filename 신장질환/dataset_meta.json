@@ -1,0 +1,122 @@
+{
+  "source": "KNHANES HN19~HN24",
+  "years": [
+    2019,
+    2020,
+    2021,
+    2022,
+    2023,
+    2024
+  ],
+  "target": "DKD",
+  "include_insulin": false,
+  "n_features": 38,
+  "features": [
+    "age",
+    "sex",
+    "DM_duration",
+    "DM_diagnosis_age",
+    "DM_medication",
+    "insulin_medication",
+    "HE_glu",
+    "HE_HbA1c",
+    "TyG_index",
+    "HE_chol",
+    "HE_HDL_st2",
+    "HE_TG",
+    "LDL_calc",
+    "non_HDL",
+    "HE_crea",
+    "eGFR",
+    "SBP",
+    "DBP",
+    "pulse_pressure",
+    "hypertension",
+    "HE_BMI",
+    "HE_ht",
+    "HE_wt",
+    "HE_ast",
+    "HE_alt",
+    "HE_Upro_pos",
+    "HE_Uglu_pos",
+    "HE_Ubld_pos",
+    "HE_Ubil_pos",
+    "HE_Uro_abn",
+    "HE_Uket_pos",
+    "HE_Unitr_b",
+    "HE_Uph",
+    "HE_Usg",
+    "smoking",
+    "drinking",
+    "exercise",
+    "sleep_7h"
+  ],
+  "feature_groups": {
+    "인구통계": [
+      "age",
+      "sex"
+    ],
+    "당뇨 관련": [
+      "DM_duration",
+      "DM_diagnosis_age",
+      "DM_medication",
+      "insulin_medication"
+    ],
+    "혈당·C-peptide": [
+      "HE_glu",
+      "HE_HbA1c"
+    ],
+    "인슐린 저항성(파생)": [
+      "TyG_index"
+    ],
+    "지질": [
+      "HE_chol",
+      "HE_HDL_st2",
+      "HE_TG",
+      "LDL_calc",
+      "non_HDL"
+    ],
+    "신장 기능": [
+      "HE_crea",
+      "eGFR"
+    ],
+    "혈압": [
+      "SBP",
+      "DBP",
+      "pulse_pressure",
+      "hypertension"
+    ],
+    "신체 계측": [
+      "HE_BMI",
+      "HE_ht",
+      "HE_wt"
+    ],
+    "간효소": [
+      "HE_ast",
+      "HE_alt"
+    ],
+    "소변(확장)": [
+      "HE_Upro_pos",
+      "HE_Uglu_pos",
+      "HE_Ubld_pos",
+      "HE_Ubil_pos",
+      "HE_Uro_abn",
+      "HE_Uket_pos",
+      "HE_Unitr_b",
+      "HE_Uph",
+      "HE_Usg"
+    ],
+    "생활습관": [
+      "smoking",
+      "drinking",
+      "exercise",
+      "sleep_7h"
+    ]
+  },
+  "n_total": 4985,
+  "n_dev": 3988,
+  "n_val": 997,
+  "n_dev_pos": 109,
+  "n_val_pos": 27,
+  "prevalence": 0.02728184553660983
+}

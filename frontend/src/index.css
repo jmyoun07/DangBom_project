@@ -1,0 +1,195 @@
+@import "tailwindcss";
+
+:root {
+  --db-accent: #6366f1;
+  --db-accent-dark: #4f46e5;
+  --db-accent-soft: #eef2ff;
+  --db-accent-ring: rgba(99, 102, 241, 0.35);
+}
+
+body {
+  font-family: 'Noto Sans KR', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  background-color: #f8f9fc;
+  margin: 0;
+  color: #111827;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-feature-settings: 'tnum';
+}
+
+html, body, #root {
+  width: 100%;
+  min-height: 100vh;
+  margin: 0;
+  padding: 0;
+}
+
+#root {
+  display: block;
+}
+
+/* ────────── Theme helpers (read --db-accent from :root) ────────── */
+.bg-accent { background-color: var(--db-accent) !important; }
+.bg-accent-dark { background-color: var(--db-accent-dark) !important; }
+.bg-accent-soft { background-color: var(--db-accent-soft) !important; }
+.text-accent { color: var(--db-accent) !important; }
+.border-accent { border-color: var(--db-accent) !important; }
+.ring-accent { box-shadow: 0 0 0 3px var(--db-accent-ring) !important; }
+.fill-accent { fill: var(--db-accent) !important; }
+.gradient-accent { background-image: linear-gradient(135deg, var(--db-accent), var(--db-accent-dark)) !important; }
+.accent-input:focus { outline: none; border-color: var(--db-accent); box-shadow: 0 0 0 3px var(--db-accent-ring); }
+
+/* ────────── Density helper ────────── */
+[data-density="compact"] .density-pad { padding: 0.75rem !important; }
+[data-density="compact"] .density-gap { gap: 0.5rem !important; }
+[data-density="comfortable"] .density-pad { padding: 1.25rem; }
+[data-density="comfortable"] .density-gap { gap: 1rem; }
+
+/* ────────── Slider thumb (uses accent) ────────── */
+input[type="range"].accent-range {
+  -webkit-appearance: none;
+  appearance: none;
+  background: transparent;
+  cursor: pointer;
+}
+input[type="range"].accent-range::-webkit-slider-runnable-track {
+  height: 6px;
+  background: #e5e7eb;
+  border-radius: 9999px;
+}
+input[type="range"].accent-range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 18px;
+  width: 18px;
+  margin-top: -6px;
+  background: var(--db-accent);
+  border: 3px solid #ffffff;
+  border-radius: 9999px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.18);
+  transition: transform 0.12s ease;
+}
+input[type="range"].accent-range::-webkit-slider-thumb:hover { transform: scale(1.12); }
+input[type="range"].accent-range::-moz-range-track {
+  height: 6px;
+  background: #e5e7eb;
+  border-radius: 9999px;
+}
+input[type="range"].accent-range::-moz-range-thumb {
+  height: 18px;
+  width: 18px;
+  background: var(--db-accent);
+  border: 3px solid #ffffff;
+  border-radius: 9999px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.18);
+}
+
+/* ────────── Card refinements ────────── */
+.card-elevated {
+  background: #ffffff;
+  border: 1px solid #f1f2f6;
+  border-radius: 14px;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04), 0 1px 1px rgba(15, 23, 42, 0.03);
+  transition: box-shadow 0.18s ease, transform 0.18s ease;
+}
+.card-elevated:hover { box-shadow: 0 4px 14px rgba(15, 23, 42, 0.06); }
+
+/* ────────── Subtle fade-in for routed content ────────── */
+@keyframes db-fade-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+.fade-in { animation: db-fade-in 0.22s ease-out both; }
+
+/* ────────── Case-comparison searching animations ────────── */
+/* Ghost cards flying across the search canvas */
+@keyframes db-card-fly {
+  0%   { transform: translate3d(var(--tx-from, -180%), var(--ty-from, -40%), 0) rotate(var(--rot-from, -22deg)) scale(0.78); opacity: 0; }
+  18%  { opacity: 0.95; }
+  82%  { opacity: 0.95; }
+  100% { transform: translate3d(var(--tx-to, 180%), var(--ty-to, 40%), 0) rotate(var(--rot-to, 22deg)) scale(0.78); opacity: 0; }
+}
+.card-fly {
+  animation-name: db-card-fly;
+  animation-duration: var(--fly-dur, 3.2s);
+  animation-timing-function: cubic-bezier(0.45, 0.05, 0.55, 0.95);
+  animation-iteration-count: infinite;
+  animation-delay: var(--fly-delay, 0s);
+  will-change: transform, opacity;
+}
+
+/* Spinning orbit rings */
+@keyframes db-orbit { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+.orbit-slow { animation: db-orbit 6s linear infinite; }
+.orbit-fast { animation: db-orbit 2.6s linear infinite reverse; }
+
+/* Final cards settling into place */
+@keyframes db-card-settle {
+  0%   { opacity: 0; transform: translateY(60px) scale(0.82) rotate(-6deg); }
+  55%  { opacity: 1; transform: translateY(-8px) scale(1.035) rotate(2deg); }
+  78%  { transform: translateY(3px) scale(0.99) rotate(-1deg); }
+  100% { opacity: 1; transform: translateY(0) scale(1) rotate(0deg); }
+}
+.card-settle {
+  animation: db-card-settle 0.85s cubic-bezier(0.16, 1, 0.3, 1) both;
+  animation-delay: var(--settle-delay, 0s);
+  will-change: transform, opacity;
+}
+
+/* Sweeping scanner bar */
+@keyframes db-scan {
+  0%   { transform: translateY(-110%); opacity: 0; }
+  10%  { opacity: 1; }
+  90%  { opacity: 1; }
+  100% { transform: translateY(110%); opacity: 0; }
+}
+.scanner-bar { animation: db-scan 1.8s ease-in-out infinite; }
+
+/* Pulse halo for found-celebration */
+@keyframes db-halo { 0% { transform: scale(0.5); opacity: 0.7; } 100% { transform: scale(2); opacity: 0; } }
+.halo-pulse { animation: db-halo 1.4s ease-out infinite; }
+
+/* Scrollbar styling (do NOT reserve gutter — that creates right whitespace) */
+html, body { scrollbar-gutter: auto; overflow: hidden; }
+
+/* ────────── prefers-reduced-motion: 애니메이션 최소화 ────────── */
+@media (prefers-reduced-motion: reduce) {
+  .card-fly,
+  .orbit-slow,
+  .orbit-fast,
+  .card-settle,
+  .scanner-bar,
+  .halo-pulse,
+  .fade-in,
+  .animate-pulse,
+  .animate-spin,
+  .animate-ping {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}
+
+/* ────────── 인쇄 미디어: 사이드바/헤더/팔레트 숨김 + 잉크 절약 ────────── */
+@media print {
+  html, body, #root { overflow: visible !important; }
+  body { background: #ffffff !important; color: #000 !important; }
+  aside,
+  header,
+  [role="dialog"],
+  .print\:hidden,
+  nav[aria-label="\uc8fc \uba54\ub274"] { display: none !important; }
+  .card-elevated { box-shadow: none !important; border-color: #e5e7eb !important; break-inside: avoid; }
+  main, .fade-in { animation: none !important; }
+  .absolute.left-64 { left: 0 !important; }
+}
+
+/* ────────── 스크린리더 전용 비가시 텍스트 (sr-only) ────────── */
+.sr-only {
+  position: absolute !important;
+  width: 1px !important;
+  height: 1px !important;
+  padding: 0 !important;
+  margin: -1px !important;
+  overflow: hidden !important;
+  clip: rect(0, 0, 0, 0) !important;
+  white-space: nowrap !important;
+  border: 0 !important;
+}

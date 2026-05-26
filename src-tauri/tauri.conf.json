@@ -1,0 +1,59 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "DB-care",
+  "version": "2.1.6",
+  "identifier": "com.dbcare.app",
+  "build": {
+    "frontendDist": "../frontend/dist",
+    "devUrl": "http://127.0.0.1:8765",
+    "beforeDevCommand": "cd ../frontend && npm run dev",
+    "beforeBuildCommand": ""
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "DB-care — 당뇨 합병증 예측",
+        "width": 1440,
+        "height": 900,
+        "minWidth": 1200,
+        "minHeight": 720,
+        "resizable": true,
+        "fullscreen": false,
+        "url": "http://127.0.0.1:8765/",
+        "visible": true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis", "msi"],
+    "publisher": "DB-care",
+    "category": "Productivity",
+    "shortDescription": "당뇨 합병증 예측",
+    "longDescription": "병원 내부용 당뇨 합병증 예측 프로그램. 6개 ML 알고리즘으로 환자의 합병증 위험도를 예측하고 시뮬레이션 합니다.",
+    "copyright": "© 2026 DB-care. All rights reserved.",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "resources": ["resources/**/*"],
+    "externalBin": [],
+    "windows": {
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper"
+      },
+      "nsis": {
+        "installMode": "currentUser",
+        "languages": ["Korean"],
+        "displayLanguageSelector": false
+      }
+    }
+  }
+}
