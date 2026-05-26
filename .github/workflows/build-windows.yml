@@ -12,7 +12,9 @@ permissions:
 jobs:
   build:
     runs-on: windows-latest
-    timeout-minutes: 60
+    # 첫 빌드: Rust 컴파일 9~10분 + PyInstaller 3분 + NSIS 7분 + WiX MSI 5~7분 = 25~30분
+    # 캐시 hit 후: 10~15분. 안전 마진 120분.
+    timeout-minutes: 120
 
     steps:
       - name: Checkout
