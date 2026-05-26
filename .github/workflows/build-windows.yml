@@ -6,6 +6,9 @@ on:
     tags: ['v*']
   workflow_dispatch: {}
 
+permissions:
+  contents: write   # Release publish 권한 (tag push 시)
+
 jobs:
   build:
     runs-on: windows-latest
@@ -25,7 +28,7 @@ jobs:
       - name: Setup Node 20
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '20.19.0'   # Vite 8 최소 요구 버전 (^20.19.0)
           cache: 'npm'
           cache-dependency-path: frontend/package-lock.json
 
@@ -47,6 +50,25 @@ jobs:
       - name: Install Tauri CLI
         run: cargo install tauri-cli --version "^2.0" --locked
 
+      # 순서 주의: frontend dist 가 먼저 만들어져야 PyInstaller spec 이
+      # frontend/dist 를 frontend_dist 리소스로 패키징할 수 있다.
+      - name: Install frontend deps
+        working-directory: frontend
+        run: npm ci
+
+      - name: Build frontend
+        working-directory: frontend
+        run: npm run build
+
+      - name: Verify frontend build output
+        run: |
+          if (-not (Test-Path frontend/dist/index.html)) {
+            throw "frontend/dist/index.html not found — npm run build failed silently"
+          }
+          $size = [math]::Round((Get-ChildItem frontend/dist -Recurse | Measure-Object Length -Sum).Sum / 1MB, 2)
+          Write-Host "frontend/dist size: $size MB"
+        shell: pwsh
+
       - name: Install backend Python deps
         run: |
           python -m pip install --upgrade pip
@@ -60,6 +82,30 @@ jobs:
           if (-not (Test-Path dist/dbcare-backend/dbcare-backend.exe)) {
             throw "Backend exe not built"
           }
+          # 검증: spec datas 에 추가한 frontend_dist 가 실제로 들어갔는지
+          if (-not (Test-Path dist/dbcare-backend/_internal/frontend_dist/index.html)) {
+            throw "frontend_dist/index.html missing from PyInstaller output — spec datas 추가 확인 필요"
+          }
+        shell: pwsh
+
+      - name: Smoke test backend exe (boot + /health)
+        run: |
+          $env:DBCARE_PORT = "18765"
+          $proc = Start-Process -FilePath "dist/dbcare-backend/dbcare-backend.exe" -PassThru -WindowStyle Hidden
+          try {
+            $ready = $false
+            for ($i = 0; $i -lt 30; $i++) {
+              Start-Sleep -Seconds 1
+              try {
+                $res = Invoke-WebRequest -Uri "http://127.0.0.1:18765/health" -TimeoutSec 2 -UseBasicParsing
+                if ($res.StatusCode -eq 200) { $ready = $true; break }
+              } catch {}
+            }
+            if (-not $ready) { throw "Backend exe failed to start (no /health response within 30s)" }
+            Write-Host "Backend exe boot OK: $($res.Content)"
+          } finally {
+            if (-not $proc.HasExited) { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue }
+          }
         shell: pwsh
 
       - name: Copy backend → src-tauri/resources/
@@ -71,14 +117,6 @@ jobs:
           $size = [math]::Round((Get-ChildItem $dest -Recurse | Measure-Object Length -Sum).Sum / 1MB, 2)
           Write-Host "Sidecar size: $size MB"
         shell: pwsh
-
-      - name: Install frontend deps
-        working-directory: frontend
-        run: npm ci
-
-      - name: Build frontend
-        working-directory: frontend
-        run: npm run build
 
       - name: Build Tauri (MSI + NSIS)
         run: cargo tauri build
@@ -98,14 +136,14 @@ jobs:
         with:
           name: DB-care-msi
           path: src-tauri/target/release/bundle/msi/*.msi
-          if-no-files-found: warn
+          if-no-files-found: error   # MSI 누락 = 빌드 실패로 간주
 
       - name: Upload NSIS artifact
         uses: actions/upload-artifact@v4
         with:
           name: DB-care-nsis
           path: src-tauri/target/release/bundle/nsis/*.exe
-          if-no-files-found: warn
+          if-no-files-found: error   # NSIS 누락 = 빌드 실패로 간주
 
       - name: Create GitHub Release (on tag push)
         if: startsWith(github.ref, 'refs/tags/v')

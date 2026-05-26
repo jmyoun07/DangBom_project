@@ -6,12 +6,21 @@
 #
 # 기존 DB-care.spec 와 다른 점:
 #   - entry 가 launcher.py → backend_entry.py (Edge 실행 / pywebview / 단일 인스턴스 락 제거)
-#   - datas 에서 frontend\dist 제거 (Tauri 가 frontendDist 로 직접 처리)
 #   - hiddenimports 에서 pywebview / webview.platforms.* 제거
 #   - name 변경 — DB-care → dbcare-backend
+#
+# v2.1.7 수정 (2026-05-26):
+#   - tauri.conf.json windows.url = http://127.0.0.1:8765/ 이므로 backend/main.py 가
+#     frontend dist 를 직접 서빙해야 함. frontend/dist → frontend_dist 로 datas 에 포함.
+#   - lightgbm / catboost 가 DKD Stacking base model 의존성이므로 collect_all 에 추가.
+#     (collect 안 하면 런타임 ImportError 로 stacking fallback 발생)
 from PyInstaller.utils.hooks import collect_all
 
-datas = [('backend', 'backend')]
+datas = [
+    ('backend', 'backend'),
+    # backend/main.py 의 FRONTEND_DIST 탐색 경로 (PROJECT_ROOT/frontend_dist)
+    ('frontend/dist', 'frontend_dist'),
+]
 binaries = []
 hiddenimports = [
     'multipart', 'python_multipart', 'dotenv', 'email_validator',
@@ -25,7 +34,8 @@ hiddenimports = [
 ]
 
 for pkg in [
-    'sklearn', 'xgboost', 'imblearn', 'pandas', 'numpy', 'joblib', 'scipy',
+    'sklearn', 'xgboost', 'lightgbm', 'catboost',
+    'imblearn', 'pandas', 'numpy', 'joblib', 'scipy',
     'threadpoolctl', 'fastapi', 'starlette', 'pydantic', 'pydantic_core',
     'sqlalchemy', 'uvicorn', 'anyio', 'sniffio', 'h11', 'click',
     'typing_extensions', 'annotated_types', 'idna', 'certifi',
