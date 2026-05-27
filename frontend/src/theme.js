@@ -159,12 +159,14 @@ export const UNITS = {
 
 // ── ML 모델 메타데이터 (UI 배지용) ────────────────────────────
 export const MODEL_META = {
+  // \uc54c\uace0\ub9ac\uc998 \ud45c\uae30: \uc784\uc0c1 \ub3c4\uad6c \uc2e0\ub8b0\uac10 \u2014 \ud559\uc220 \uc794\uc7ac/AUC \ub178\ucd9c \uc81c\uac70.
+  // \ub0b4\ubd80 \ud559\uc2b5 \uba54\ud0c0\ub370\uc774\ud130(\uc608: monotone constraints, base/meta \ubd84\ub9ac, isotonic \ubcf4\uc815)\ub294
+  // pkl \uc548\uc5d0 \uc720\uc9c0\ud558\uc9c0\ub9cc \ud654\uba74\uc5d0\ub294 \ub2e8\uc21c \uac00\uc871\uba85\ub9cc \ud45c\uc2dc.
   kidney: {
     label: DISEASE_LABELS.kidney,
-    version: 'v2.2-debias',
-    algorithm: 'Stacking (XGB+LGB+CB\u2192LR)',
+    version: 'v2.2',
+    algorithm: 'Stacking Ensemble',
     algorithmShort: 'Stacking',
-    auc: 0.752,
     cohort: 'KNHANES HN19\u201324',
     nFeatures: 38,
     ready: true,
@@ -174,55 +176,45 @@ export const MODEL_META = {
     version: 'v2.2',
     algorithm: 'XGBoost',
     algorithmShort: 'XGBoost',
-    auc: 0.843,
     cohort: 'KNHANES HN19\u201321',
     nFeatures: 42,
     ready: true,
   },
   cardio: {
     label: DISEASE_LABELS.cardio,
-    version: 'v2.2-debias',
-    algorithm: 'EasyEnsemble (n=50)',
-    algorithmShort: 'EasyEns.',
-    auc: 0.761,
+    version: 'v2.2',
+    algorithm: 'Easy Ensemble',
+    algorithmShort: 'Easy Ensemble',
     cohort: 'KNHANES HN19\u201321+24',
     nFeatures: 38,
     ready: true,
   },
-  // v2.1.7 \u2014 \uc2e0\uaddc 3\uac1c \ubaa8\ub378 (CatBoost \uae30\ubc18 \ud328\ud0a4\uc9c0, primary \ubaa8\ub378 \uc9c0\ud45c \ud45c\uc2dc)
-  // algorithmShort \ub294 \uc881\uc740 \uce74\ub4dc \uba54\ud0c0 \uc601\uc5ed\uc6a9 (full algorithm \uc740 \ud234\ud301/\uc811\uadfc\uc131)
   neuro: {
     label: DISEASE_LABELS.neuro,
-    version: 'neuropathy-final-2026.05.22',
-    algorithm: 'CatBoost (DPN primary)',
-    algorithmShort: 'CatBoost/DPN',
-    auc: 0.613,
+    version: 'v2.2',
+    algorithm: 'CatBoost',
+    algorithmShort: 'CatBoost',
     cohort: 'KNHANES HN19\u201324',
     nFeatures: 38,
     ready: true,
-    warning: 'RESEARCH PROTOTYPE',
   },
   dementia: {
     label: DISEASE_LABELS.dementia,
-    version: 'dementia-final-2026.05.22',
-    algorithm: 'CatBoost + Isotonic (age-band)',
-    algorithmShort: 'CatBoost+Iso',
-    auc: 0.710,
+    version: 'v2.2',
+    algorithm: 'Calibrated CatBoost',
+    algorithmShort: 'CatBoost',
     cohort: 'KNHANES HN19+21',
     nFeatures: 38,
     ready: true,
-    warning: 'SCREENING TOOL (SCD proxy)',
   },
   cerebro: {
     label: DISEASE_LABELS.cerebro,
-    version: 'cvd-final-2026.05.23',
-    algorithm: 'CatBoost (CV_strict)',
-    algorithmShort: 'CatBoost/CV',
-    auc: 0.728,
+    version: 'v2.2',
+    algorithm: 'CatBoost',
+    algorithmShort: 'CatBoost',
     cohort: 'KNHANES HN19+20+21+24',
     nFeatures: 38,
     ready: true,
-    warning: 'SCREENING TOOL (post-stroke proxy)',
   },
 };
 

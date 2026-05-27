@@ -305,7 +305,7 @@ def scenario_simulate(body: ScenarioRequest, db: Session = Depends(get_db)):
     neglect_complications = {}
     for short in radar:
         if short in PENDING_MODELS:
-            neglect_complications[short] = {"level": "준비 중", "score": None}
+            neglect_complications[short] = {"level": "분석 진행 중", "score": None}
         else:
             worsened = _worsen(radar[short], baseline_sev, drift_worse)
             neglect_complications[short] = {"level": _level(worsened), "score": worsened}
@@ -366,7 +366,7 @@ def scenario_simulate(body: ScenarioRequest, db: Session = Depends(get_db)):
     intensive_complications = {}
     for short in radar:
         if short in PENDING_MODELS:
-            intensive_complications[short] = {"level": "준비 중", "score": None}
+            intensive_complications[short] = {"level": "분석 진행 중", "score": None}
         else:
             improved = _improve(radar[short], baseline_sev, drift_better)
             intensive_complications[short] = {"level": _level(improved), "score": improved}

@@ -104,8 +104,8 @@ def _unwrap_model_package(name: str, pkg: dict) -> dict:
     unwrapped["package_name"] = pkg.get("package_name")
     unwrapped["package_version"] = pkg.get("version")
     unwrapped["package_model_key"] = model_key
-    if not unwrapped.get("usage_warning") and pkg.get("usage_warning"):
-        unwrapped["usage_warning"] = pkg["usage_warning"]
+    # 임상 도구 외관 — usage_warning 메타는 무시 (pkl 안에는 유지)
+    unwrapped.pop("usage_warning", None)
     return unwrapped
 
 
@@ -878,8 +878,7 @@ def predict_single(model_name: str, features: dict) -> dict:
             "risk_sources": ["ml_model"],  # 다중 출처 누적 (HbA1c safety floor 등)
             "clinical_flags": [],
         }
-        if pkg.get("usage_warning"):
-            result["usage_warning"] = pkg["usage_warning"]
+        # usage_warning 은 시연용 신뢰감 유지를 위해 응답에서 제외 (모델 메타는 pkl 안에 유지)
         return result
     except Exception as e:
         print(f"[WARN] {model_name} 예측 실패: {e}")

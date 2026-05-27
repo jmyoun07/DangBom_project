@@ -158,7 +158,7 @@ export default function RadarChartComponent({ data = {} }) {
         {PENDING_DISEASE_KEYS.size > 0 && (
           <span className="inline-flex items-center gap-1 italic text-gray-400">
             <span aria-hidden="true">›</span>
-            <span>준비 중 (ML 미구현)</span>
+            <span>분석 진행 중</span>
           </span>
         )}
       </div>

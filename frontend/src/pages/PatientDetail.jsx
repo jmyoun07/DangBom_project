@@ -362,28 +362,12 @@ export default function PatientDetail() {
                     </div>
                   );
                 }
-                // v2.1.7 \u2014 \uC2E0\uADDC 3\uAC1C \uBAA8\uB378\uC740 backend \uC5D0\uC11C usage_warning \uD544\uB4DC \uC804\uB2EC.
-                // RESEARCH PROTOTYPE / SCREENING TOOL \uACBD\uACE0\uB97C \uCE74\uB4DC \uC0C1\uB2E8\uC5D0 amber \uBC30\uC9C0\uB85C \uB178\uCD9C.
-                const warn = pred.usage_warning;
-                const warnShort = warn
-                  ? (warn.includes('RESEARCH PROTOTYPE') ? '\u26A0 \uC5F0\uAD6C\uC6A9 PROTOTYPE'
-                    : warn.includes('SCREENING') ? '\u26A0 \uC120\uBCC4 \uC2A4\uD06C\uB9AC\uB2DD \uB3C4\uAD6C'
-                    : '\u26A0 \uC784\uC0C1 \uC0AC\uC6A9 \uC8FC\uC758')
-                  : null;
                 return (
                   <div key={m.key} className="bg-gray-50 rounded-lg p-3">
                     <div className="flex justify-between items-start mb-2">
                       <span className="text-xs font-medium text-gray-700">{m.name}</span>
                       <RiskBadge level={pred.level} />
                     </div>
-                    {warnShort && (
-                      <div
-                        className="mb-1.5 inline-flex items-center gap-1 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 bg-amber-50 border border-amber-200 rounded"
-                        title={warn}
-                      >
-                        {warnShort}
-                      </div>
-                    )}
                     <p className="text-xs text-gray-500 mb-1">
                       {'\uC704\uD5D8\uC9C0\uC218'} <span className="text-sm font-bold text-gray-800">{pred.score}</span>/100
                     </p>
@@ -391,9 +375,9 @@ export default function PatientDetail() {
                     {meta && (
                       <div
                         className="mt-2 text-[10px] text-gray-400 truncate"
-                        title={`${meta.algorithm} / AUC ${meta.auc} / cohort ${meta.cohort} / ${meta.nFeatures} features / version ${meta.version}${meta.warning ? ' / ' + meta.warning : ''}`}
+                        title={`${meta.algorithm} / cohort ${meta.cohort} / ${meta.nFeatures} features`}
                       >
-                        {meta.algorithmShort || meta.algorithm} <span className="text-gray-300">{'\u00b7'}</span> AUC {meta.auc?.toFixed(3)}
+                        {meta.algorithmShort || meta.algorithm}
                       </div>
                     )}
                   </div>
