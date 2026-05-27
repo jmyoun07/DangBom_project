@@ -72,8 +72,45 @@ def _patch_adaboost_compat(root) -> None:
     walk(root)
 
 
+# v2.1.7 — 신규 3개 모델 (패키지 구조) primary 키 매핑
+#   neuropathy → DPN (말초신경병증, DAN 보다 흔함)
+#   dementia → DSCD (Subjective Cognitive Decline)
+#   cerebrovascular → CV_strict (후유증 동반 strict 라벨, role=primary)
+PRIMARY_MODEL_KEYS = {
+    "neuropathy": "DPN",
+    "dementia": "DSCD",
+    "cerebrovascular": "CV_strict",
+}
+
+
+def _unwrap_model_package(name: str, pkg: dict) -> dict:
+    """신규 package pkl 구조 ({models: {DPN: {...}, ...}}) 를 기존 predict_single 호환 dict 로 변환."""
+    if not isinstance(pkg, dict) or "models" not in pkg:
+        return pkg
+
+    models = pkg.get("models") or {}
+    model_key = PRIMARY_MODEL_KEYS.get(name)
+    if model_key not in models:
+        # primary role 자동 탐색 또는 단일 모델 fallback
+        primary_keys = [k for k, v in models.items() if isinstance(v, dict) and v.get("role") == "primary"]
+        if len(primary_keys) == 1:
+            model_key = primary_keys[0]
+        elif len(models) == 1:
+            model_key = next(iter(models))
+        else:
+            raise KeyError(f"{name} package primary model not found: {model_key}")
+
+    unwrapped = dict(models[model_key])
+    unwrapped["package_name"] = pkg.get("package_name")
+    unwrapped["package_version"] = pkg.get("version")
+    unwrapped["package_model_key"] = model_key
+    if not unwrapped.get("usage_warning") and pkg.get("usage_warning"):
+        unwrapped["usage_warning"] = pkg["usage_warning"]
+    return unwrapped
+
+
 def _load_model(name: str) -> Optional[dict]:
-    """pkl 로드. 캐시되어 한 번만 로드."""
+    """pkl 로드. package 구조는 primary 모델로 unwrap. 캐시되어 한 번만 로드."""
     if name in _model_cache:
         return _model_cache[name]
 
@@ -81,6 +118,10 @@ def _load_model(name: str) -> Optional[dict]:
         "kidney_disease": "dkd_model.pkl",
         "retinopathy": "retinopathy_model.pkl",
         "cardiovascular": "cvd_model.pkl",
+        # v2.1.7 — 신규 3개 (패키지 구조, _unwrap_model_package 가 primary 추출)
+        "neuropathy": "neuropathy_final.pkl",
+        "dementia": "dementia_final.pkl",
+        "cerebrovascular": "cerebrovascular_final.pkl",
     }
     fname = pkl_map.get(name)
     if not fname:
@@ -93,10 +134,18 @@ def _load_model(name: str) -> Optional[dict]:
     try:
         with open(fpath, "rb") as f:
             pkg = pickle.load(f)
-        # sklearn 버전 호환 패치
-        _patch_adaboost_compat(pkg.get("model") if isinstance(pkg, dict) else pkg)
-        # ★ joblib 워커 spawn 차단 — frozen 앱에서 sys.executable 재실행 → 새 Edge 창 방지
-        _force_n_jobs_one(pkg)
+
+        # sklearn 버전 호환 패치 + joblib 워커 spawn 차단
+        if isinstance(pkg, dict) and "models" in pkg:
+            # 신규 패키지 구조: 전체 트리에 patch 적용 후 unwrap
+            _patch_adaboost_compat(pkg)
+            _force_n_jobs_one(pkg)
+            pkg = _unwrap_model_package(name, pkg)
+        else:
+            _patch_adaboost_compat(pkg.get("model") if isinstance(pkg, dict) else pkg)
+            # ★ joblib 워커 spawn 차단 — frozen 앱에서 sys.executable 재실행 → 새 Edge 창 방지
+            _force_n_jobs_one(pkg)
+
         _model_cache[name] = pkg
         return pkg
     except Exception as e:
@@ -710,24 +759,82 @@ def _dummy_prediction(name: str, features: dict) -> dict:
     }
 
 
+def _threshold_value(value) -> Optional[float]:
+    """thresholds_by_age 의 dict/raw float 값을 float 로 정규화."""
+    if isinstance(value, dict):
+        value = value.get("threshold")
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _threshold_for_age(pkg: dict, age) -> Optional[float]:
+    """dementia age band threshold 선택. 범위 밖/누락 시 기본 threshold."""
+    default_threshold = _threshold_value(pkg.get("threshold"))
+    thresholds_by_age = pkg.get("thresholds_by_age")
+    age_val = _safe_num(age, None)
+    if not isinstance(thresholds_by_age, dict) or age_val is None:
+        return default_threshold
+
+    if 50 <= age_val <= 64:
+        key = "age_50_64"
+    elif 65 <= age_val <= 74:
+        key = "age_65_74"
+    elif age_val >= 75:
+        key = "age_75plus"
+    else:
+        return default_threshold
+
+    age_threshold = _threshold_value(thresholds_by_age.get(key))
+    return age_threshold if age_threshold is not None else default_threshold
+
+
+def _calibrate_proba(pkg: dict, proba: float) -> float:
+    """IsotonicRegression calibrator 가 있으면 확률 보정 (dementia 전용)."""
+    calibrator = pkg.get("calibrator")
+    if calibrator is None:
+        return float(proba)
+    return float(np.clip(calibrator.transform([proba])[0], 0.0, 1.0))
+
+
 def _predict_proba_from_pkg(pkg: dict, X: pd.DataFrame) -> float:
     """pkg 의 model_type 에 따라 단일 또는 Stacking 예측. 양성 확률 반환."""
     model_type = pkg.get("model_type", "")
+
     # v2.2-debias Stacking: base 3개 → meta LR
-    if model_type == "Stacking" and "stacking" in pkg:
-        st = pkg["stacking"]
+    # 신규 cerebrovascular CV(secondary) 도 같은 구조 (model=None, stacking dict)
+    if model_type == "Stacking":
+        st = pkg.get("stacking") or {}
+        base_models = st.get("base_models") or {}
+        meta_model = st.get("meta_model")
+        if not base_models or meta_model is None:
+            raise ValueError("Stacking 모델에 base_models/meta_model 이 없습니다.")
+
         base_order = st.get("base_order", ["xgb", "lgb", "cb"])
         base_probs = []
         for k in base_order:
-            base_probs.append(st["base_models"][k].predict_proba(X)[0, 1])
+            if k not in base_models:
+                raise KeyError(f"Stacking base model missing: {k}")
+            base_probs.append(base_models[k].predict_proba(X)[0, 1])
         meta_in = np.array(base_probs).reshape(1, -1)
-        return float(st["meta_model"].predict_proba(meta_in)[0, 1])
+        return float(meta_model.predict_proba(meta_in)[0, 1])
+
     # 일반 단일 모델
-    return float(pkg["model"].predict_proba(X)[0, 1])
+    model = pkg.get("model")
+    if model is None:
+        raise ValueError(f"model is None for model_type={model_type}")
+    return float(model.predict_proba(X)[0, 1])
 
 
 def predict_single(model_name: str, features: dict) -> dict:
-    """단일 모델 예측. pkl 없으면 더미."""
+    """단일 모델 예측. pkl 없으면 더미.
+
+    v2.1.7 변경 (신규 3개 모델 대응):
+      - dementia 의 IsotonicRegression calibrator 적용 (predict_proba 후 보정)
+      - dementia 의 age-band threshold (50_64 / 65_74 / 75plus) 선택
+      - usage_warning 필드 전달 (RESEARCH PROTOTYPE / SCREENING TOOL 경고)
+    """
     pkg = _load_model(model_name)
     if pkg is None:
         return _dummy_prediction(model_name, features)
@@ -749,13 +856,19 @@ def predict_single(model_name: str, features: dict) -> dict:
             X = pd.DataFrame(pkg["scaler"].transform(X), columns=model_features)
 
         proba = _predict_proba_from_pkg(pkg, X)
+        # dementia: IsotonicRegression 보정 → score/threshold 모두 보정값 기준
+        proba = _calibrate_proba(pkg, proba)
         score = round(proba * 100, 1)
 
         # v2.1.3 — 모델 학습 threshold 반영
+        # v2.1.7 — dementia 만 age-band threshold 사용
         model_threshold = pkg.get("threshold")
+        if model_name == "dementia":
+            model_threshold = _threshold_for_age(pkg, features.get("age"))
+
         level = _classify_risk(score, model_threshold=model_threshold)
 
-        return {
+        result = {
             "score": score,
             "raw_score": score,  # v2.1.3 (Codex 리뷰): C-pep 가산 등 보정 전 ML 원본 점수
             "level": level,
@@ -765,6 +878,9 @@ def predict_single(model_name: str, features: dict) -> dict:
             "risk_sources": ["ml_model"],  # 다중 출처 누적 (HbA1c safety floor 등)
             "clinical_flags": [],
         }
+        if pkg.get("usage_warning"):
+            result["usage_warning"] = pkg["usage_warning"]
+        return result
     except Exception as e:
         print(f"[WARN] {model_name} 예측 실패: {e}")
         return _dummy_prediction(model_name, features)
@@ -803,15 +919,15 @@ def predict_all(patient_data: dict) -> dict:
     """6개 알고리즘 전체 예측. v2.1.2 — KNHANES 동일 연령대 percentile 자동 주입."""
     features = patient_to_features(patient_data)
 
-    completed_models = ["kidney_disease", "retinopathy", "cardiovascular"]
-    pending_models = ["neuropathy", "dementia", "cerebrovascular"]
+    # v2.1.7 — 6개 모델 모두 ML 추론 (신규 3개 패키지 _load_model 에서 unwrap)
+    all_models = [
+        "kidney_disease", "retinopathy", "cardiovascular",
+        "neuropathy", "dementia", "cerebrovascular",
+    ]
 
     result = {}
-    for name in completed_models:
+    for name in all_models:
         result[name] = predict_single(name, features)
-
-    for name in pending_models:
-        result[name] = {"score": None, "level": None, "available": False, "clinical_flags": []}
 
     # v2.1.6 — C-peptide 미세혈관 신호는 score/level 에 섞지 않고 clinical_flags 로만 표시.
     try:

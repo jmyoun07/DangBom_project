@@ -119,7 +119,10 @@ export const DISEASE_LABELS = {
 };
 
 // ML 모델이 아직 배포되지 않은 합병증 (Radar/Risk 화면에서 '준비 중' 표시)
-export const PENDING_DISEASE_KEYS = new Set(['neuro', 'dementia', 'cerebro']);
+// v2.1.7 — 신규 3개 (neuro/dementia/cerebro) 패키지 모델 연동 완료, set 비움.
+// 일부 모델 (neuro AUC 0.61) 은 임상 사용 불가 수준이지만 화면 표시는 정상.
+// usage_warning 필드로 prototype/screening 표시는 result 객체에 포함됨.
+export const PENDING_DISEASE_KEYS = new Set();
 export const AVAILABLE_DISEASE_KEYS = new Set(['kidney', 'retina', 'cardio']);
 
 // ── 단위 표기 상수 (일관성 강제) ──────────────────────────────
@@ -180,9 +183,37 @@ export const MODEL_META = {
     nFeatures: 38,
     ready: true,
   },
-  neuro:    { label: DISEASE_LABELS.neuro,    version: '\u2014', algorithm: '\u2014', auc: null, cohort: '\u2014', nFeatures: 0, ready: false },
-  dementia: { label: DISEASE_LABELS.dementia, version: '\u2014', algorithm: '\u2014', auc: null, cohort: '\u2014', nFeatures: 0, ready: false },
-  cerebro:  { label: DISEASE_LABELS.cerebro,  version: '\u2014', algorithm: '\u2014', auc: null, cohort: '\u2014', nFeatures: 0, ready: false },
+  // v2.1.7 \u2014 \uc2e0\uaddc 3\uac1c \ubaa8\ub378 (CatBoost \uae30\ubc18 \ud328\ud0a4\uc9c0, primary \ubaa8\ub378 \uc9c0\ud45c \ud45c\uc2dc)
+  neuro: {
+    label: DISEASE_LABELS.neuro,
+    version: 'neuropathy-final-2026.05.22',
+    algorithm: 'CatBoost (DPN primary)',
+    auc: 0.613,
+    cohort: 'KNHANES HN19\u201324',
+    nFeatures: 38,
+    ready: true,
+    warning: 'RESEARCH PROTOTYPE',
+  },
+  dementia: {
+    label: DISEASE_LABELS.dementia,
+    version: 'dementia-final-2026.05.22',
+    algorithm: 'CatBoost + Isotonic (age-band)',
+    auc: 0.710,
+    cohort: 'KNHANES HN19+21',
+    nFeatures: 38,
+    ready: true,
+    warning: 'SCREENING TOOL (SCD proxy)',
+  },
+  cerebro: {
+    label: DISEASE_LABELS.cerebro,
+    version: 'cvd-final-2026.05.23',
+    algorithm: 'CatBoost (CV_strict)',
+    auc: 0.728,
+    cohort: 'KNHANES HN19+20+21+24',
+    nFeatures: 38,
+    ready: true,
+    warning: 'SCREENING TOOL (post-stroke proxy)',
+  },
 };
 
 // ── 환자명 마스킹 유틸 (PHI 보호) ─────────────────────────────

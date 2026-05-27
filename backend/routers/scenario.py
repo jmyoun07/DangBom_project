@@ -41,8 +41,11 @@ def _stable_offset(seed_key: str, lo: float, hi: float) -> float:
     return lo + frac * (hi - lo)
 
 
-PENDING_MODELS = {"neuro", "dementia", "cerebro"}  # pkl 없는 미구현 3개
-AVAILABLE_MODELS = {"kidney", "retina", "cardio"}  # 실제 ML 예측 3개
+# v2.1.7 — 신규 3개 패키지 모델 (neuropathy/dementia/cerebrovascular) 연동 완료.
+# PENDING 세트 비움 → neglect/intensive 모두 ML 예측 사용.
+# AVAILABLE 에 6개 모두 추가 → fold_change 등 정량 비교에 포함.
+PENDING_MODELS = set()
+AVAILABLE_MODELS = {"kidney", "retina", "cardio", "neuro", "dementia", "cerebro"}
 
 
 # ── 전조증상 사전 (질환별 + HIGH/MEDIUM/LOW 등급) ──
