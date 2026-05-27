@@ -123,7 +123,10 @@ export const DISEASE_LABELS = {
 // 일부 모델 (neuro AUC 0.61) 은 임상 사용 불가 수준이지만 화면 표시는 정상.
 // usage_warning 필드로 prototype/screening 표시는 result 객체에 포함됨.
 export const PENDING_DISEASE_KEYS = new Set();
-export const AVAILABLE_DISEASE_KEYS = new Set(['kidney', 'retina', 'cardio']);
+export const AVAILABLE_DISEASE_KEYS = new Set([
+  'kidney', 'retina', 'cardio',
+  'neuro', 'dementia', 'cerebro',  // v2.1.7 — 신규 3개 패키지 모델 연동 완료
+]);
 
 // ── 단위 표기 상수 (일관성 강제) ──────────────────────────────
 export const UNITS = {
