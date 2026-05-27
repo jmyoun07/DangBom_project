@@ -390,13 +390,10 @@ export default function PatientDetail() {
                     <RiskBar score={pred.score} level={pred.level} />
                     {meta && (
                       <div
-                        className="mt-2 text-[10px] text-gray-400 flex items-center justify-between"
-                        title={`${meta.algorithm} / AUC ${meta.auc} / ${meta.cohort} / ${meta.nFeatures} feat${meta.warning ? ' / ' + meta.warning : ''}`}
+                        className="mt-2 text-[10px] text-gray-400 truncate"
+                        title={`${meta.algorithm} / AUC ${meta.auc} / cohort ${meta.cohort} / ${meta.nFeatures} features / version ${meta.version}${meta.warning ? ' / ' + meta.warning : ''}`}
                       >
-                        <span>
-                          {meta.algorithm} <span className="text-gray-300">\u00b7</span> AUC {meta.auc?.toFixed(3)}
-                        </span>
-                        <span className="font-mono">{meta.version}</span>
+                        {meta.algorithmShort || meta.algorithm} <span className="text-gray-300">{'\u00b7'}</span> AUC {meta.auc?.toFixed(3)}
                       </div>
                     )}
                   </div>

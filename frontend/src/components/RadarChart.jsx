@@ -141,7 +141,7 @@ export default function RadarChartComponent({ data = {} }) {
           />
         </RechartsRadarChart>
       </ResponsiveContainer>
-      {/* 범례 — 색각 대비 포함 */}
+      {/* 범례 — 색각 대비 포함. v2.1.7: 준비 중 범례는 PENDING 있을 때만 노출 */}
       <div className="flex flex-wrap items-center justify-center gap-x-3 gap-y-1 text-[11px] text-gray-600 px-2 pt-1">
         <span className="inline-flex items-center gap-1">
           <span aria-hidden="true" className="text-red-500 leading-none">▲</span>
@@ -153,12 +153,14 @@ export default function RadarChartComponent({ data = {} }) {
         </span>
         <span className="inline-flex items-center gap-1">
           <span aria-hidden="true" className="text-emerald-500 leading-none">●</span>
-          <span>{RISK_LEVELS.LOW} (threshold 미만)</span>
+          <span>{RISK_LEVELS.LOW} (모델 기준 미만)</span>
         </span>
-        <span className="inline-flex items-center gap-1 italic text-gray-400">
-          <span aria-hidden="true">›</span>
-          <span>준비 중 (ML 미구현)</span>
-        </span>
+        {PENDING_DISEASE_KEYS.size > 0 && (
+          <span className="inline-flex items-center gap-1 italic text-gray-400">
+            <span aria-hidden="true">›</span>
+            <span>준비 중 (ML 미구현)</span>
+          </span>
+        )}
       </div>
       <p className="text-[10px] text-gray-400 text-center mt-1">
         축 길이 = 0–100 위험점수, 점 색 = backend level 우선
