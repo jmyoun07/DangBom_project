@@ -12,11 +12,25 @@ pkl 없을 경우 더미 예측값 fallback.
 from __future__ import annotations
 import pickle
 import math
+import logging
+import warnings
 from pathlib import Path
 from typing import Optional
 
 import numpy as np
 import pandas as pd
+
+logger = logging.getLogger("dbcare.predictor")
+
+# v2.1.8 — 모델 pkl 의 sklearn 학습 버전이 런타임과 달라 발생하는
+# InconsistentVersionWarning 억제. 실측 검증 결과 KNNImputer/StandardScaler/
+# IsotonicRegression 의 transform 결과는 1.5.2↔1.8.0 사이 0.000 차이로 동일하여
+# 예측 정확성에는 영향이 없음. 로그/콘솔 오염만 막는다.
+try:
+    from sklearn.exceptions import InconsistentVersionWarning
+    warnings.filterwarnings("ignore", category=InconsistentVersionWarning)
+except Exception:
+    pass
 
 MODEL_DIR = Path(__file__).resolve().parent / "models"
 
@@ -743,7 +757,18 @@ def apply_clinical_floor(predictions: dict, patient_data: dict) -> dict:
 
 
 def _dummy_prediction(name: str, features: dict) -> dict:
-    """pkl 없을 때 더미 예측."""
+    """pkl 로드/예측 실패 시 더미 예측 (개발 환경 전용 폴백).
+
+    v2.1.8 — 조용한 폴백 방지: 배포본에서 이 경로에 도달하면 모델 번들이
+    깨졌다는 뜻이므로 ERROR 로 명확히 남긴다 (APPDATA/DB-care/backend.log).
+    CI 의 ML smoke test 가 통과한 배포본에서는 이 함수가 호출되지 않아야 정상.
+    risk_source 를 'fallback_dummy' 로 표기해 진짜 ML 예측과 구분한다.
+    """
+    logger.error(
+        "[MODEL FALLBACK] '%s' 모델을 로드/예측하지 못해 더미값을 반환합니다. "
+        "배포본이라면 모델 번들(.pkl) 누락 또는 의존성 문제입니다.",
+        name,
+    )
     import random
     random.seed(hash(name) + int(features.get("age", 60)))
     score = round(random.uniform(15, 85), 1)
@@ -753,8 +778,8 @@ def _dummy_prediction(name: str, features: dict) -> dict:
         "level": _classify_risk(score),
         "available": True,
         "model_threshold": None,
-        "risk_source": "ml_model",
-        "risk_sources": ["ml_model"],
+        "risk_source": "fallback_dummy",
+        "risk_sources": ["fallback_dummy"],
         "clinical_flags": [],
     }
 

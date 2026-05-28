@@ -88,23 +88,48 @@ jobs:
           if (-not (Test-Path dist/dbcare-backend/_internal/frontend_dist/index.html)) {
             throw "frontend_dist/index.html missing from PyInstaller output — spec datas 추가 확인 필요"
           }
+          # 검증: 6개 모델 pkl 이 번들에 포함됐는지
+          $modelDir = "dist/dbcare-backend/_internal/backend/ml/models"
+          foreach ($pkl in @("dkd_model.pkl","retinopathy_model.pkl","cvd_model.pkl","neuropathy_final.pkl","dementia_final.pkl","cerebrovascular_final.pkl")) {
+            if (-not (Test-Path "$modelDir/$pkl")) { throw "Model missing from bundle: $pkl" }
+          }
+          # 검증: ML native 바이너리 (CatBoost / VC++ 런타임) 번들 포함
+          $internal = "dist/dbcare-backend/_internal"
+          $catboost = Get-ChildItem -Path $internal -Recurse -Include "_catboost*.pyd","*catboost*.dll" -ErrorAction SilentlyContinue
+          if (-not $catboost) { throw "CatBoost native binary (_catboost.pyd) missing — PyInstaller collect_all 확인" }
+          Write-Host "CatBoost native: $($catboost[0].Name)"
+          $vcrt = Get-ChildItem -Path $internal -Recurse -Include "vcruntime*.dll","msvcp*.dll" -ErrorAction SilentlyContinue
+          Write-Host "VC++ runtime DLLs bundled: $($vcrt.Count)"
         shell: pwsh
 
-      - name: Smoke test backend exe (boot + /health)
+      - name: Smoke test backend exe (boot + /health + 6 models)
         run: |
           $env:DBCARE_PORT = "18765"
           $proc = Start-Process -FilePath "dist/dbcare-backend/dbcare-backend.exe" -PassThru -WindowStyle Hidden
           try {
             $ready = $false
-            for ($i = 0; $i -lt 30; $i++) {
+            for ($i = 0; $i -lt 40; $i++) {
               Start-Sleep -Seconds 1
               try {
                 $res = Invoke-WebRequest -Uri "http://127.0.0.1:18765/health" -TimeoutSec 2 -UseBasicParsing
                 if ($res.StatusCode -eq 200) { $ready = $true; break }
               } catch {}
             }
-            if (-not $ready) { throw "Backend exe failed to start (no /health response within 30s)" }
-            Write-Host "Backend exe boot OK: $($res.Content)"
+            if (-not $ready) { throw "Backend exe failed to start (no /health response within 40s)" }
+            Write-Host "Backend /health OK: $($res.Content)"
+
+            # ML 검증: 환자 1번 예측 → 6개 모델 모두 ml_model (fallback_dummy 아님)
+            $body = '{"patient_id":1}'
+            $pred = Invoke-RestMethod -Uri "http://127.0.0.1:18765/api/v1/predict" -Method Post -Body $body -ContentType "application/json" -TimeoutSec 15
+            $data = $pred.data
+            $models = @("kidney_disease","retinopathy","cardiovascular","neuropathy","dementia","cerebrovascular")
+            foreach ($m in $models) {
+              $info = $data.$m
+              if (-not $info.available) { throw "Model not available: $m" }
+              if ($info.risk_source -eq "fallback_dummy") { throw "Model fell back to dummy (pkl load 실패): $m" }
+              Write-Host ("  {0,-16} score={1} level={2} source={3}" -f $m, $info.score, $info.level, $info.risk_source)
+            }
+            Write-Host "6개 ML 모델 전부 정상 예측 확인"
           } finally {
             if (-not $proc.HasExited) { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue }
           }

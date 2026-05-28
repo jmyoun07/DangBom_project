@@ -11,7 +11,6 @@ import { invalidatePatientContextCache } from '../components/layout/PatientConte
 import {
   UNITS,
   REFERENCE_RANGES,
-  MODEL_META,
   AVAILABLE_DISEASE_KEYS,
   prodSafeError,
 } from '../theme';
@@ -350,7 +349,6 @@ export default function PatientDetail() {
             <div className="grid grid-cols-3 gap-3">
               {completedModels.map((m) => {
                 const pred = predictions?.[m.key];
-                const meta = MODEL_META[m.metaKey];
                 if (!pred?.available) {
                   return (
                     <div key={m.key} className="bg-gray-50 rounded-lg p-3 opacity-70">
@@ -372,14 +370,6 @@ export default function PatientDetail() {
                       {'\uC704\uD5D8\uC9C0\uC218'} <span className="text-sm font-bold text-gray-800">{pred.score}</span>/100
                     </p>
                     <RiskBar score={pred.score} level={pred.level} />
-                    {meta && (
-                      <div
-                        className="mt-2 text-[10px] text-gray-400 truncate"
-                        title={`${meta.algorithm} / cohort ${meta.cohort} / ${meta.nFeatures} features`}
-                      >
-                        {meta.algorithmShort || meta.algorithm}
-                      </div>
-                    )}
                   </div>
                 );
               })}

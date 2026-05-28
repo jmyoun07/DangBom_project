@@ -11,4 +11,6 @@ python-dotenv==1.0.1
 imbalanced-learn==0.12.4
 xgboost==2.1.1
 lightgbm==4.5.0
-catboost==1.2.7
+# catboost 1.2.10: 신규 3개 모델(neuropathy/dementia/cerebrovascular) pkl 저장 버전과 정합.
+# 1.2.7 에서도 로드/예측은 동일하나 patch 버전 일치로 경고 제거.
+catboost==1.2.10

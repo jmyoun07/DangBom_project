@@ -71,6 +71,18 @@ def apply_lightweight_migrations() -> None:
             return  # 첫 실행: create_all 이 처리함
 
         existing_cols = {c["name"] for c in inspector.get_columns("patients")}
+
+        # v2.1.8 — 마이그레이션(ALTER/UPDATE) 전 1회성 백업.
+        # 실제 환자 DB 파일이 있을 때만, 아직 백업이 없으면 .bak 생성.
+        try:
+            if DB_FILE.exists() and DB_FILE.stat().st_size > 0:
+                bak = DB_FILE.with_suffix(DB_FILE.suffix + ".premigrate.bak")
+                if not bak.exists():
+                    import shutil
+                    shutil.copy2(DB_FILE, bak)
+                    print(f"[MIGRATION] DB 백업 생성: {bak}")
+        except Exception as _bak_err:
+            print(f"[MIGRATION] DB 백업 실패 (계속 진행): {_bak_err}")
         # 새 컬럼들 (향후 추가 시 여기에 나열)
         needed = {
             "risk_level":         "VARCHAR",
