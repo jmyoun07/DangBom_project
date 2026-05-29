@@ -105,6 +105,7 @@ jobs:
       - name: Smoke test backend exe (boot + /health + 6 models)
         run: |
           $env:DBCARE_PORT = "18765"
+          $env:DBCARE_SEED = "1"   # CI 검증용 시드 환자 10명 생성 (patient_id=1 존재 보장)
           $proc = Start-Process -FilePath "dist/dbcare-backend/dbcare-backend.exe" -PassThru -WindowStyle Hidden
           try {
             $ready = $false
