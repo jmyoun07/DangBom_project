@@ -101,7 +101,7 @@ export default function RiskCard({
             <span className="text-xs text-gray-500">{metricLabel}</span>
             <span className="text-sm font-bold text-gray-800">{metricValue}</span>
           </div>
-          <RiskBar score={score || 0} />
+          <RiskBar score={score || 0} level={level} />
           {flagsOpen && flags.length > 0 && (
             <div className={`mt-3 rounded-lg border px-3 py-2 ${flagStyle.panel}`}>
               <div className="flex items-center gap-1.5 text-[11px] font-semibold mb-1">

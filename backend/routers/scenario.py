@@ -9,7 +9,11 @@ from sqlalchemy.orm import Session
 
 from models.database import get_db, Patient
 from models.schemas import ScenarioRequest
-from ml.predictor import predict_with_simulation
+from ml.predictor import (
+    predict_with_simulation,
+    classify_disease_risk,
+    get_disease_thresholds,
+)
 
 router = APIRouter(prefix="/api/v1", tags=["scenario"])
 
@@ -20,14 +24,18 @@ def _patient_to_dict(p: Patient) -> dict:
     return {c.name: getattr(p, c.name) for c in p.__table__.columns}
 
 
-def _level(score):
+def _level(score, disease_key=None, age=None):
+    # v2.1.9 (감사 — 등급 경계 통일): 30/60 고정 대신 질환별 모델 threshold 사용.
+    # disease_key 없으면(legacy) 보수적으로 중위험.
     if score is None:
         return "중위험"
-    if score >= 60:
-        return "고위험"
-    if score >= 30:
-        return "중위험"
-    return "저위험"
+    if disease_key is None:
+        if score >= 60:
+            return "고위험"
+        if score >= 30:
+            return "중위험"
+        return "저위험"
+    return classify_disease_risk(score, disease_key, age=age) or "저위험"
 
 
 def _clamp(v, lo, hi):
@@ -275,7 +283,12 @@ def scenario_simulate(body: ScenarioRequest, db: Session = Depends(get_db)):
         pred = current_pred.get(full_name, {})
         score = pred.get("score")
         if score is None:
-            # 미구현 모델 → 슬라이더 반응 가능한 휴리스틱 참고값 + sensitivity 적용
+            # score is None 경로:
+            #  - 정상 배포본(CI smoke test 통과)에서는 6개 모델 항상 로드되어 도달하지 않음.
+            #  - 모델 번들이 깨진 비정상 환경에서만 도달 → 휴리스틱 참고값으로 시각화.
+            #    (Dashboard/PatientDetail 은 available=False 로 "예측 불가" 표면화하므로
+            #     의사가 모델 이상을 인지함. RiskAnalysis 시나리오 휴리스틱 표시는 알려진 한계.)
+            #  TODO(후속): available=False 모델을 radar 에서 분리해 "예측 불가" 명시.
             score = _pending_reference_score(
                 patient.id, short_name, patient,
                 hba1c=body.hba1c, c_peptide=body.c_peptide,
@@ -308,7 +321,7 @@ def scenario_simulate(body: ScenarioRequest, db: Session = Depends(get_db)):
             neglect_complications[short] = {"level": "분석 진행 중", "score": None}
         else:
             worsened = _worsen(radar[short], baseline_sev, drift_worse)
-            neglect_complications[short] = {"level": _level(worsened), "score": worsened}
+            neglect_complications[short] = {"level": _level(worsened, short, age), "score": worsened}
 
     # 건강수명 감소 — baseline severity + 악화 방향 drift 가 클수록 큼.
     # 저위험 + 슬라이더 그대로 → 1년 미만 (사실상 변화 없음).
@@ -369,7 +382,7 @@ def scenario_simulate(body: ScenarioRequest, db: Session = Depends(get_db)):
             intensive_complications[short] = {"level": "분석 진행 중", "score": None}
         else:
             improved = _improve(radar[short], baseline_sev, drift_better)
-            intensive_complications[short] = {"level": _level(improved), "score": improved}
+            intensive_complications[short] = {"level": _level(improved, short, age), "score": improved}
 
     hba1c_after = max(5.5, body.hba1c - 1.0)
 
@@ -468,7 +481,7 @@ def scenario_simulate(body: ScenarioRequest, db: Session = Depends(get_db)):
         else:
             score = round(_clamp(score, 1, 99), 1)
         grad_complications[short_name] = {
-            "level": _level(score),
+            "level": _level(score, short_name, age),
             "score": score,
         }
 
@@ -536,6 +549,8 @@ def scenario_simulate(body: ScenarioRequest, db: Session = Depends(get_db)):
             "intensive": intensive,
             "graduation": graduation,
             "fold_change_by_disease": fold_change_by_disease,
+            # v2.1.9 — 질환별 모델 threshold (0~100). 프론트가 일관 등급화에 사용.
+            "risk_thresholds": get_disease_thresholds(age=age),
             "recommended_program": {
                 "name": prog_name,
                 "description": prog_desc,

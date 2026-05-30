@@ -3,49 +3,63 @@ Pydantic Schemas for API request/response
 """
 from __future__ import annotations
 from datetime import date, datetime
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 from typing import Optional
 
 
 # ── Patient ───────────────────────────────────────────────────
+# v2.1.9 (감사): 의료 수치 범위 검증 추가. 범위는 "생리적으로 가능한 극단"까지
+# 느슨하게 잡아 실데이터 거부를 피하되, 명백한 오입력(음수/단위실수)은 차단.
 
 class PatientBase(BaseModel):
     """v2 스키마 — 병원 수집 변수 기준 (KNHANES 매칭)."""
     # ── 메타데이터 ──────────────────────────────
-    name: str
-    chart_no: str
+    name: str = Field(..., min_length=1, max_length=100)
+    chart_no: str = Field(..., min_length=1, max_length=50)
     dob: Optional[date] = None
     sex: Optional[str] = None
-    age: Optional[int] = None
-    phone: Optional[str] = None
+    age: Optional[int] = Field(None, ge=0, le=120)
+    phone: Optional[str] = Field(None, max_length=30)
     exam_date: Optional[date] = None
 
     # ── 혈당·인슐린 ─────────────────────────────
-    hba1c: Optional[float] = None           # HE_HbA1c
-    c_peptide: Optional[float] = None       # 병원 실측. he_insulin 자동 변환
-    fbg: Optional[float] = None             # HE_glu
-    he_insulin: Optional[float] = None      # (선택) 실측 가능 시만
+    hba1c: Optional[float] = Field(None, ge=2.0, le=25.0)        # HE_HbA1c (%)
+    c_peptide: Optional[float] = Field(None, ge=0.0, le=50.0)    # ng/mL
+    fbg: Optional[float] = Field(None, ge=10.0, le=1500.0)       # HE_glu mg/dL (극단 고혈당 수용)
+    he_insulin: Optional[float] = Field(None, ge=0.0, le=300.0)
 
     # ── 간효소 ──────────────────────────────────
-    ggt: Optional[float] = None             # 참고용 (모델 미사용)
-    alt: Optional[float] = None
-    ast: Optional[float] = None
+    ggt: Optional[float] = Field(None, ge=0.0, le=2000.0)
+    alt: Optional[float] = Field(None, ge=0.0, le=2000.0)
+    ast: Optional[float] = Field(None, ge=0.0, le=2000.0)
 
     # ── 신장 ────────────────────────────────────
-    cr: Optional[float] = None              # HE_crea (→ eGFR 파생)
+    cr: Optional[float] = Field(None, ge=0.0, le=30.0)          # HE_crea (→ eGFR 파생)
 
     # ── 지질 ────────────────────────────────────
-    total_cholesterol: Optional[float] = None
-    triglycerides: Optional[float] = None
-    hdl: Optional[float] = None
-    ldl: Optional[float] = None             # 실측 LDL (없으면 LDL_calc 파생)
+    total_cholesterol: Optional[float] = Field(None, ge=0.0, le=1000.0)
+    triglycerides: Optional[float] = Field(None, ge=0.0, le=10000.0)  # 극단 고중성지방혈증 수용
+    hdl: Optional[float] = Field(None, ge=0.0, le=300.0)
+    ldl: Optional[float] = Field(None, ge=0.0, le=1000.0)       # 실측 LDL (없으면 LDL_calc 파생)
 
     # ── 혈압·신체 ──────────────────────────────
-    sbp: Optional[float] = None
-    dbp: Optional[float] = None
-    bmi: Optional[float] = None
-    height: Optional[float] = None          # HE_ht
-    weight: Optional[float] = None          # HE_wt
+    sbp: Optional[float] = Field(None, ge=40.0, le=320.0)
+    dbp: Optional[float] = Field(None, ge=20.0, le=220.0)
+    bmi: Optional[float] = Field(None, ge=8.0, le=90.0)
+    height: Optional[float] = Field(None, ge=80.0, le=230.0)    # HE_ht cm
+    weight: Optional[float] = Field(None, ge=15.0, le=350.0)    # HE_wt kg
+
+    @field_validator("sex")
+    @classmethod
+    def _validate_sex(cls, v):
+        if v is None:
+            return v
+        s = str(v).strip().upper()
+        if s in ("M", "1", "남", "MALE"):
+            return "M"
+        if s in ("F", "2", "여", "FEMALE"):
+            return "F"
+        raise ValueError("sex must be M/F (or 1/2, 남/여)")
 
     # ── 소변 dipstick (기본 3 + 확장 6) ────────
     he_upro: Optional[float] = None
@@ -135,11 +149,11 @@ class PredictRequest(BaseModel):
 
 class SimulateRequest(BaseModel):
     patient_id: int
-    c_peptide: float
-    hba1c: float
+    c_peptide: float = Field(..., ge=0.0, le=50.0)
+    hba1c: float = Field(..., ge=2.0, le=25.0)
 
 
 class ScenarioRequest(BaseModel):
     patient_id: int
-    c_peptide: float
-    hba1c: float
+    c_peptide: float = Field(..., ge=0.0, le=50.0)
+    hba1c: float = Field(..., ge=2.0, le=25.0)

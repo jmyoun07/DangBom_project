@@ -124,7 +124,11 @@ def _unwrap_model_package(name: str, pkg: dict) -> dict:
 
 
 def _load_model(name: str) -> Optional[dict]:
-    """pkl 로드. package 구조는 primary 모델로 unwrap. 캐시되어 한 번만 로드."""
+    """pkl 로드. package 구조는 primary 모델로 unwrap. 캐시되어 한 번만 로드.
+
+    v2.1.9 (감사 B): 실패도 캐시(None sentinel)해 등급 조회마다 재시도하지 않는다
+    (scenario 가 질환별 threshold 를 18회 조회하므로 실패 모델 반복 시도 방지).
+    """
     if name in _model_cache:
         return _model_cache[name]
 
@@ -143,6 +147,8 @@ def _load_model(name: str) -> Optional[dict]:
 
     fpath = MODEL_DIR / fname
     if not fpath.exists():
+        logger.error("[MODEL MISSING] %s 파일 없음: %s", name, fpath)
+        _model_cache[name] = None   # 실패 캐시 (재시도 방지)
         return None
 
     try:
@@ -163,7 +169,8 @@ def _load_model(name: str) -> Optional[dict]:
         _model_cache[name] = pkg
         return pkg
     except Exception as e:
-        print(f"[WARN] {name} 모델 로드 실패: {e}")
+        logger.error("[MODEL LOAD FAIL] %s: %s", name, e)
+        _model_cache[name] = None   # 실패 캐시 (재시도 방지)
         return None
 
 
@@ -242,6 +249,11 @@ def _safe_num(value, default=None):
 
 
 def _calc_egfr(crea: float, age: float, sex: int) -> float:
+    # v2.1.9 (감사 H3): Cr<=0 / age<=0 방어. 이전엔 가드가 없어 Cr=0 이면
+    # min(0,1)**(-0.411) → inf/ZeroDivision 으로 비정상 eGFR 가 모델에 들어갔다.
+    # derived.py _ckd_epi_egfr 와 동일한 가드로 통일.
+    if crea is None or age is None or crea <= 0 or age <= 0:
+        return np.nan
     if sex == 1:
         kappa, alpha, factor = 0.9, -0.411, 1.0
     else:
@@ -293,9 +305,11 @@ def patient_to_features(patient_data: dict) -> dict:
     tyg = math.log(tg * glu / 2.0) if tg > 0 and glu > 0 else np.nan
     bmi_homa = bmi_ * homa_ir
     # LDL: 병원 실측치 우선, 없으면 Friedewald 계산
+    # v2.1.9 (감사 H3): Friedewald 는 TG<400 에서만 신뢰 (derived.py 와 일치).
+    # TG≥400 이면 실측 없이 계산하지 않고 NaN → imputer 가 처리.
     ldl_calc = _safe_num(d.get("ldl"), None)
     if ldl_calc is None:
-        ldl_calc = chol - hdl - tg / 5.0
+        ldl_calc = (chol - hdl - tg / 5.0) if tg < 400 else np.nan
     non_hdl = chol - hdl
     egfr = _calc_egfr(crea, age, sex_code)
     pp = sbp - dbp
@@ -445,17 +459,27 @@ def _classify_risk(score: float, model_threshold: float | None = None) -> str:
     예시:
       score=26, threshold=19.5 → 중위험 (학습 threshold 초과)
       score=35, threshold=43.7 → 저위험 (threshold 미만)
-      score=70, threshold=43.7 → 고위험 (60 이상)
+      score=70, threshold=43.7 → 고위험 (60 이상 + threshold 이상)
+
+    v2.1.9 (감사 — 등급 경계 통일): 고위험 = score>=60 AND score>=threshold.
+    threshold 는 모델 "양성/주의" 컷오프이므로 중위험 기준으로 쓰고, 고위험은
+    절대위험 60 을 유지하되 threshold 미만이면 고위험으로 올리지 않는다.
+    이 함수가 backend/frontend/scenario 모든 등급화의 단일 진실 소스.
     """
-    if score >= HIGH_RISK_FALLBACK:
-        return "고위험"
+    if score is None:
+        return None
     if model_threshold is not None:
         th = float(model_threshold)
         if th <= 1.0:
             th *= 100.0
+        if score >= HIGH_RISK_FALLBACK and score >= th:
+            return "고위험"
         if score >= th:
             return "중위험"
         return "저위험"
+    # threshold 없는 더미/구모델: 30/60 fallback
+    if score >= HIGH_RISK_FALLBACK:
+        return "고위험"
     if score >= MID_RISK_FALLBACK:
         return "중위험"
     return "저위험"
@@ -756,30 +780,24 @@ def apply_clinical_floor(predictions: dict, patient_data: dict) -> dict:
     return predictions
 
 
-def _dummy_prediction(name: str, features: dict) -> dict:
-    """pkl 로드/예측 실패 시 더미 예측 (개발 환경 전용 폴백).
+def _unavailable_prediction(name: str, reason: str = "model_unavailable") -> dict:
+    """모델 로드/예측 실패 시 — 가짜 더미값 대신 '예측 불가' 를 명확히 반환.
 
-    v2.1.8 — 조용한 폴백 방지: 배포본에서 이 경로에 도달하면 모델 번들이
-    깨졌다는 뜻이므로 ERROR 로 명확히 남긴다 (APPDATA/DB-care/backend.log).
-    CI 의 ML smoke test 가 통과한 배포본에서는 이 함수가 호출되지 않아야 정상.
-    risk_source 를 'fallback_dummy' 로 표기해 진짜 ML 예측과 구분한다.
+    v2.1.9 (감사 C1): 환자 안전. 이전에는 random.uniform 더미 점수를
+    available=True 로 반환해 모델이 깨져도 정상 예측처럼 보였다 (의료 오진 위험).
+    이제 score/level=None + available=False 로 UI 가 "예측 불가" 를 표시하게 한다.
+    배포본에서 이 경로 도달은 모델 번들(.pkl) 누락/의존성 문제이므로 ERROR 로 남긴다.
     """
-    logger.error(
-        "[MODEL FALLBACK] '%s' 모델을 로드/예측하지 못해 더미값을 반환합니다. "
-        "배포본이라면 모델 번들(.pkl) 누락 또는 의존성 문제입니다.",
-        name,
-    )
-    import random
-    random.seed(hash(name) + int(features.get("age", 60)))
-    score = round(random.uniform(15, 85), 1)
+    logger.error("[MODEL UNAVAILABLE] '%s' 예측 불가: %s", name, reason)
     return {
-        "score": score,
-        "raw_score": score,
-        "level": _classify_risk(score),
-        "available": True,
+        "score": None,
+        "raw_score": None,
+        "level": None,
+        "available": False,
         "model_threshold": None,
-        "risk_source": "fallback_dummy",
-        "risk_sources": ["fallback_dummy"],
+        "risk_source": "unavailable",
+        "risk_sources": [],
+        "error": reason,
         "clinical_flags": [],
     }
 
@@ -813,6 +831,52 @@ def _threshold_for_age(pkg: dict, age) -> Optional[float]:
 
     age_threshold = _threshold_value(thresholds_by_age.get(key))
     return age_threshold if age_threshold is not None else default_threshold
+
+
+# ── 등급 경계 단일 진실 소스 (감사 — 등급 불일치 통일) ──
+# scenario.py / 프론트가 자체 30/60 고정값을 쓰지 않고 이 함수들을 통해
+# 모델 학습 threshold 기준으로 일관되게 등급화한다.
+DISEASE_MODEL_NAMES = (
+    "kidney_disease", "retinopathy", "cardiovascular",
+    "neuropathy", "dementia", "cerebrovascular",
+)
+# 프론트/시나리오의 짧은 키 → 모델명 매핑
+DISEASE_ALIASES = {
+    "kidney": "kidney_disease", "retina": "retinopathy",
+    "cardio": "cardiovascular", "neuro": "neuropathy",
+    "dementia": "dementia", "cerebro": "cerebrovascular",
+}
+
+
+def _threshold_percent(value) -> Optional[float]:
+    """threshold 를 0~100 scale 로 정규화."""
+    th = _threshold_value(value)
+    if th is None:
+        return None
+    return round(th * 100.0 if th <= 1.0 else th, 2)
+
+
+def get_disease_threshold(disease: str, age=None) -> Optional[float]:
+    """질환의 모델 학습 threshold (0~100). dementia 는 age-band 반영."""
+    name = DISEASE_ALIASES.get(disease, disease)
+    pkg = _load_model(name)
+    if pkg is None:
+        return None
+    raw = _threshold_for_age(pkg, age) if name == "dementia" else pkg.get("threshold")
+    return _threshold_percent(raw)
+
+
+def get_disease_thresholds(age=None) -> dict:
+    """6개 질환의 threshold dict (짧은 키 기준). 프론트/시나리오 응답에 포함."""
+    out = {}
+    for short, full in DISEASE_ALIASES.items():
+        out[short] = get_disease_threshold(full, age=age)
+    return out
+
+
+def classify_disease_risk(score, disease: str, age=None) -> Optional[str]:
+    """질환별 모델 threshold 로 등급화 (단일 진실 소스)."""
+    return _classify_risk(score, get_disease_threshold(disease, age=age))
 
 
 def _calibrate_proba(pkg: dict, proba: float) -> float:
@@ -862,7 +926,7 @@ def predict_single(model_name: str, features: dict) -> dict:
     """
     pkg = _load_model(model_name)
     if pkg is None:
-        return _dummy_prediction(model_name, features)
+        return _unavailable_prediction(model_name, "model_not_loaded")
 
     try:
         model_features = pkg["features"]
@@ -906,8 +970,8 @@ def predict_single(model_name: str, features: dict) -> dict:
         # usage_warning 은 시연용 신뢰감 유지를 위해 응답에서 제외 (모델 메타는 pkl 안에 유지)
         return result
     except Exception as e:
-        print(f"[WARN] {model_name} 예측 실패: {e}")
-        return _dummy_prediction(model_name, features)
+        logger.error("[PREDICT ERROR] %s 예측 실패: %s", model_name, e)
+        return _unavailable_prediction(model_name, f"prediction_error: {type(e).__name__}")
 
 
 # ── v2.1.4 — C-peptide 양면성 flag (논문 근거 기반) ──
@@ -954,24 +1018,32 @@ def predict_all(patient_data: dict) -> dict:
         result[name] = predict_single(name, features)
 
     # v2.1.6 — C-peptide 미세혈관 신호는 score/level 에 섞지 않고 clinical_flags 로만 표시.
+    # v2.1.9 (감사 H2): 실패를 조용히 삼키지 않는다 — 안전망 미적용을 예측에 표면화.
     try:
         cpep_bidirectional_adjust(result, patient_data.get("c_peptide"))
     except Exception as e:
-        print(f"[WARN] cpep_bidirectional_adjust 실패: {e}")
+        logger.error("[SAFETY] cpep_bidirectional_adjust 실패: %s", e)
+        for info in result.values():
+            if isinstance(info, dict) and info.get("available"):
+                info.setdefault("warnings", []).append("cpep_flag_unavailable")
 
     # v2.1.4 — 강한 임상 안전망(HbA1c ≥ 11%)만 마지막에 최소 등급 보장.
+    # 이 단계 실패 = HbA1c≥11 고위험 등 안전망 미적용 → 위험도 과소표시 가능 → 반드시 표면화.
     try:
         apply_clinical_floor(result, patient_data)
     except Exception as e:
-        print(f"[WARN] apply_clinical_floor 실패: {e}")
+        logger.error("[SAFETY] apply_clinical_floor 실패 — 임상 안전망 미적용: %s", e)
+        for info in result.values():
+            if isinstance(info, dict) and info.get("available"):
+                info.setdefault("warnings", []).append("clinical_safety_net_unavailable")
 
-    # KNHANES 코호트 대비 percentile (동일 연령대) — 데이터 있으면 자동 주입
+    # KNHANES 코호트 대비 percentile (동일 연령대) — 부가 정보, 실패해도 예측엔 영향 없음.
     try:
         from services.percentile import enrich_predictions
         age = patient_data.get("age") or features.get("age")
         enrich_predictions(result, age)
     except Exception as e:
-        print(f"[WARN] percentile enrichment 실패: {e}")
+        logger.warning("[INFO] percentile enrichment 실패 (부가정보): %s", e)
 
     return result
 

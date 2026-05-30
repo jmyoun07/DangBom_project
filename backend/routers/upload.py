@@ -181,6 +181,15 @@ def _parse_date(value):
 _STRING_FIELDS = {"name", "chart_no", "phone", "sex"}
 
 
+def _sanitize_cell(s: str) -> str:
+    """v2.1.9 (감사): CSV/Excel formula injection 방어.
+    =,+,-,@,탭,CR 로 시작하는 셀은 앞에 ' 를 붙여 수식 실행을 막는다.
+    (저장 + 추후 export 시 Excel 이 수식으로 해석하는 것 방지)"""
+    if s and s[0] in ("=", "+", "-", "@", "\t", "\r"):
+        return "'" + s
+    return s
+
+
 def _coerce_numeric(value):
     """병원 CSV 의 흔한 비-숫자 표기들을 float 으로 정규화.
 
@@ -236,10 +245,11 @@ def _row_to_patient_data(row, idx: int, column_lookup: dict) -> dict:
             if parsed is not None:
                 patient_data[db_field] = parsed
         elif db_field in _STRING_FIELDS:
-            # 이름/차트번호/연락처/성별은 문자열 그대로 (sex 코드 변환은 아래에서)
+            # 이름/차트번호/연락처/성별은 문자열 (sex 코드 변환은 아래에서)
+            # v2.1.9 (감사): formula injection 방어 sanitize 적용.
             s = str(val).strip()
             if s:
-                patient_data[db_field] = s
+                patient_data[db_field] = _sanitize_cell(s)
         else:
             # 숫자 컬럼 — HH:MM 등 비-숫자 표기 정규화
             num = _coerce_numeric(val)
@@ -288,14 +298,23 @@ async def upload_csv(
       6. 단일 commit
       7. ML risk_level 계산은 BackgroundTasks 로 비동기 처리
     """
-    if not file.filename.endswith(".csv"):
+    # v2.1.9 (감사): 서버측 검증 — 확장자 + MIME + 크기 (프론트 검증만 믿지 않음)
+    if not (file.filename or "").lower().endswith(".csv"):
         raise HTTPException(status_code=400, detail="CSV 파일만 업로드 가능합니다.")
 
     content = await file.read()
+    MAX_CSV_BYTES = 20 * 1024 * 1024  # 20MB
+    if len(content) > MAX_CSV_BYTES:
+        raise HTTPException(status_code=413, detail=f"CSV 파일이 너무 큽니다 (최대 {MAX_CSV_BYTES // 1024 // 1024}MB).")
+    if not content.strip():
+        raise HTTPException(status_code=400, detail="빈 CSV 파일입니다.")
     try:
         df = pd.read_csv(io.BytesIO(content))
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"CSV 파싱 실패: {str(e)}")
+    MAX_ROWS = 10000
+    if len(df) > MAX_ROWS:
+        raise HTTPException(status_code=413, detail=f"행이 너무 많습니다 (최대 {MAX_ROWS}행).")
 
     # ── 1) 매핑 미리보기 ─────────────────────────────────
     mapping_preview = []
@@ -342,6 +361,27 @@ async def upload_csv(
     has_dob = "dob" in df.columns or "생년월일" in df.columns
     if not has_age and not has_dob:
         errors.append("필수 컬럼 'age' 또는 'dob' 중 하나는 있어야 합니다")
+
+    # v2.1.9 (감사): 필수 컬럼 누락 등 errors 가 있으면 저장하지 않고 즉시 반환.
+    # 이전엔 errors 를 모아두고도 저장을 계속 진행해 부분 저장 위험이 있었음.
+    if errors:
+        return {
+            "data": {
+                "file_name": file.filename,
+                "total_rows": len(df),
+                "created_count": 0, "updated_count": 0, "visits_added": 0,
+                "skipped_count": 0, "unique_patients_affected": 0,
+                "created_ids": [], "updated_ids": [], "skipped": [],
+                "last_patient_id": None, "is_single_patient": False,
+                "mapping_preview": mapping_preview,
+                "validation": {
+                    "errors": errors,
+                    "warnings": warnings[:50],
+                    "successes": successes,
+                },
+            },
+            "success": False,
+        }
 
     # ── 3) 행 변환 (DB 접근 없음) ─────────────────────────
     rows_data = []

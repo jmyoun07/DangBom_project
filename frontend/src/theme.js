@@ -15,7 +15,10 @@ export const RISK_LEVELS = {
   NOT_READY: '\uC900\ube44 \uc911', // 준비 중 (ML 미구현 모델용)
 };
 
-// 0-100 점수를 레벨 문자열로. 백엔드 _level() 과 cut-off 동일 (60/30).
+// 0-100 점수를 레벨 문자열로 — FALLBACK 전용.
+// v2.1.9 (감사 — 등급 통일): 등급의 단일 진실 소스는 backend 의 모델 threshold 기반
+// _classify_risk 다. 모든 화면은 API 응답의 `level` 을 우선 사용하고, level 이
+// 없을 때(legacy/오류)만 이 30/60 고정 fallback 을 쓴다. (RadarChart/RiskBar/Dashboard 모두 `level || scoreToLevel` 패턴)
 export function scoreToLevel(score) {
   if (score == null || Number.isNaN(score)) return null;
   if (score >= 60) return RISK_LEVELS.HIGH;

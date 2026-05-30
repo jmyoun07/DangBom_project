@@ -150,6 +150,14 @@ MEAS_COLS: list[tuple[str, str]] = [
 ]
 
 
+def _sanitize_cell(s: str) -> str:
+    """v2.1.9 (감사): CSV/Excel formula injection 방어.
+    =,+,-,@,탭,CR 로 시작하는 셀은 ' 를 붙여 Excel 수식 실행 차단."""
+    if s and s[0] in ("=", "+", "-", "@", "\t", "\r"):
+        return "'" + s
+    return s
+
+
 def _val(obj, key: str) -> str:
     """ORM 객체의 값을 CSV 셀 문자열로. None → 빈칸, date/datetime → ISO 문자열."""
     v = getattr(obj, key, None)
@@ -159,7 +167,7 @@ def _val(obj, key: str) -> str:
         return v.strftime("%Y-%m-%d %H:%M:%S")
     if isinstance(v, date):
         return v.strftime("%Y-%m-%d")
-    return str(v)
+    return _sanitize_cell(str(v))
 
 
 # ── 단일 환자 export ─────────────────────────────────────────
