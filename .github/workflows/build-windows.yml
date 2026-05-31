@@ -146,6 +146,14 @@ jobs:
           Write-Host "Sidecar size: $size MB"
         shell: pwsh
 
+      - name: Clean stale bundle outputs
+        run: |
+          # Rust target 캐시 공유로 이전 빌드 산출물(옛 버전 .exe/.msi)이 남아
+          # release/artifact 에 섞이는 것 방지. bundle 만 지우고 캐시(deps)는 유지.
+          $bundle = "src-tauri/target/release/bundle"
+          if (Test-Path $bundle) { Remove-Item $bundle -Recurse -Force }
+        shell: pwsh
+
       - name: Build Tauri (MSI + NSIS)
         run: cargo tauri build
         env:
@@ -159,20 +167,28 @@ jobs:
             Format-Table -AutoSize
         shell: pwsh
 
+      # artifact 는 보조(디버그용). quota 초과해도 release 직접 업로드로 배포하므로
+      # 실패해도 job 을 멈추지 않는다 (continue-on-error).
       - name: Upload MSI artifact
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: DB-care-msi
           path: src-tauri/target/release/bundle/msi/*.msi
-          if-no-files-found: error   # MSI 누락 = 빌드 실패로 간주
+          if-no-files-found: warn
+          retention-days: 3
 
       - name: Upload NSIS artifact
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: DB-care-nsis
           path: src-tauri/target/release/bundle/nsis/*.exe
-          if-no-files-found: error   # NSIS 누락 = 빌드 실패로 간주
+          if-no-files-found: warn
+          retention-days: 3
 
+      # ★ 배포 경로: tag(v*) push 시 빌드 산출물을 Release 에 직접 업로드.
+      #   Release 저장소는 artifact quota 와 별도라 항상 가능.
       - name: Create GitHub Release (on tag push)
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
