@@ -22,24 +22,35 @@ use std::net::TcpListener;
 use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
-use tauri::{Manager, RunEvent, WindowEvent};
+use tauri::{Manager, RunEvent, Url, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
 
-const BACKEND_PORT: u16 = 8765;
+// v2.1.9 (배포 안정성): 8765 고정 → 동적 포트 폴백.
+// 8765 가 점유돼 있고 그게 다른 프로세스면 OS 빈 포트를 자동 선택해 충돌을 피한다.
+// (기존 개발 PC 의 좀비 backend / dev 서버가 8765 점유해도 정상 기동)
+const PREFERRED_PORT: u16 = 8765;
 const BACKEND_TIMEOUT_SECS: u64 = 180;
-const BACKEND_PORT_BUSY_MESSAGE: &str =
-    "이전 세션이 정리되지 않았습니다.\n작업관리자에서 dbcare-backend.exe 종료 후 재시도하세요.";
 
 #[derive(Debug, Deserialize)]
 struct HealthResponse {
     instance_id: Option<String>,
 }
 
-enum BackendPortState {
-    Available,
-    CurrentInstance,
+/// 백엔드 기동 계획 — 기존 인스턴스 재사용 vs 새로 spawn(포트 포함).
+#[derive(Debug, Clone, Copy)]
+enum BackendLaunchPlan {
+    UseExisting { port: u16 },
+    Spawn { port: u16 },
+}
+
+impl BackendLaunchPlan {
+    fn port(&self) -> u16 {
+        match self {
+            Self::UseExisting { port } | Self::Spawn { port } => *port,
+        }
+    }
 }
 
 struct BackendProcess {
@@ -218,7 +229,7 @@ fn generate_instance_id() -> Result<String, String> {
     Ok(id)
 }
 
-fn api_token_initialization_script(api_token: &str) -> String {
+fn api_token_initialization_script(api_token: &str, port: u16) -> String {
     let token_literal =
         serde_json::to_string(api_token).expect("serializing DB-care API token cannot fail");
     format!(
@@ -242,7 +253,7 @@ fn api_token_initialization_script(api_token: &str) -> String {
   }});
 }})();
 "#,
-        port = BACKEND_PORT,
+        port = port,
         token = token_literal
     )
 }
@@ -277,44 +288,42 @@ fn fetch_backend_health(
         .map_err(|e| format!("/health JSON 파싱 실패: {}", e))
 }
 
-fn inspect_backend_port(port: u16, instance_id: &str) -> Result<BackendPortState, String> {
+/// OS 가 비어있는 포트를 할당하게 한다 (TcpListener bind 0).
+fn pick_ephemeral_backend_port() -> Result<u16, String> {
+    let listener = TcpListener::bind(("127.0.0.1", 0))
+        .map_err(|e| format!("빈 백엔드 포트 할당 실패: {}", e))?;
+    Ok(listener
+        .local_addr()
+        .map_err(|e| format!("빈 백엔드 포트 확인 실패: {}", e))?
+        .port())
+}
+
+/// 백엔드 기동 계획 결정.
+///   - 선호 포트(8765) 비어있음 → Spawn(8765)
+///   - 선호 포트 점유 + /health instance_id 일치 → UseExisting(8765) (우리 인스턴스, 단일 인스턴스 락)
+///   - 선호 포트 점유 + 다른 프로세스 → Spawn(빈 포트)  ※ 종료하지 않고 폴백
+fn decide_backend_launch(port: u16, instance_id: &str) -> Result<BackendLaunchPlan, String> {
     match TcpListener::bind(("127.0.0.1", port)) {
         Ok(listener) => {
             drop(listener);
-            Ok(BackendPortState::Available)
+            Ok(BackendLaunchPlan::Spawn { port })
         }
         Err(bind_err) => {
-            log::warn!("백엔드 포트 {} 점유 감지: {}", port, bind_err);
-
-            let client = match build_health_client() {
-                Ok(client) => client,
-                Err(e) => {
-                    log::warn!("점유 중인 포트 health client 생성 실패: {}", e);
-                    return Err(BACKEND_PORT_BUSY_MESSAGE.to_string());
-                }
-            };
-
-            match fetch_backend_health(&client, port) {
-                Ok(health) if health.instance_id.as_deref() == Some(instance_id) => {
-                    log::info!(
-                        "현재 인스턴스 백엔드가 이미 응답 중입니다 instance_id={}",
-                        instance_id
-                    );
-                    Ok(BackendPortState::CurrentInstance)
-                }
-                Ok(health) => {
-                    log::warn!(
-                        "기존 /health instance_id mismatch: existing={:?}, current={}",
-                        health.instance_id,
-                        instance_id
-                    );
-                    Err(BACKEND_PORT_BUSY_MESSAGE.to_string())
-                }
-                Err(e) => {
-                    log::warn!("점유 중인 포트의 /health 확인 실패: {}", e);
-                    Err(BACKEND_PORT_BUSY_MESSAGE.to_string())
+            log::warn!("선호 백엔드 포트 {} 점유 감지: {}", port, bind_err);
+            if let Ok(client) = build_health_client() {
+                match fetch_backend_health(&client, port) {
+                    Ok(h) if h.instance_id.as_deref() == Some(instance_id) => {
+                        log::info!("현재 인스턴스 백엔드가 이미 응답 중 — 재사용");
+                        return Ok(BackendLaunchPlan::UseExisting { port });
+                    }
+                    Ok(h) => log::warn!("기존 /health instance_id mismatch: {:?}", h.instance_id),
+                    Err(e) => log::warn!("점유 포트 /health 확인 실패: {}", e),
                 }
             }
+            // 다른 프로세스가 8765 점유 → 빈 포트로 폴백 (종료하지 않음)
+            let fallback = pick_ephemeral_backend_port()?;
+            log::info!("포트 {} 대신 빈 포트 {} 사용", port, fallback);
+            Ok(BackendLaunchPlan::Spawn { port: fallback })
         }
     }
 }
@@ -325,6 +334,7 @@ fn spawn_backend(
     app: &tauri::AppHandle,
     api_token: &str,
     instance_id: &str,
+    port: u16,
 ) -> Result<BackendProcess, String> {
     let exe_dir = std::env::current_exe()
         .map_err(|e| format!("current_exe 실패: {}", e))?
@@ -367,7 +377,7 @@ fn spawn_backend(
 
     let mut cmd = Command::new(&backend_exe);
     cmd.env("DBCARE_DESKTOP", "1")
-        .env("DBCARE_PORT", BACKEND_PORT.to_string())
+        .env("DBCARE_PORT", port.to_string())
         .env("DBCARE_API_TOKEN", api_token)
         .env("DBCARE_INSTANCE_ID", instance_id)
         .stdout(Stdio::null())
@@ -514,6 +524,24 @@ fn show_error_dialog(_title: &str, msg: &str) {
     eprintln!("{}", msg);
 }
 
+/// 결정된 포트로 메인 윈도우를 동적 생성한다.
+/// 토큰은 initialization_script 로 주입 — 초기 로드 race 없음 (eval 보다 안전).
+/// backend /health OK 이후 호출해야 흰화면이 안 뜬다.
+fn create_main_window(app: &tauri::App, api_token: &str, port: u16) -> Result<(), String> {
+    let url = Url::parse(&format!("http://127.0.0.1:{}/", port))
+        .map_err(|e| format!("메인 윈도우 URL 생성 실패: {}", e))?;
+    WebviewWindowBuilder::new(app, "main", WebviewUrl::External(url))
+        .title("DB-care — 당뇨 합병증 예측")
+        .inner_size(1440.0, 900.0)
+        .min_inner_size(1200.0, 720.0)
+        .resizable(true)
+        .visible(true)
+        .initialization_script(api_token_initialization_script(api_token, port))
+        .build()
+        .map_err(|e| format!("메인 윈도우 생성 실패: {}", e))?;
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let api_token = match generate_api_token() {
@@ -532,14 +560,7 @@ pub fn run() {
         }
     };
 
-    let auth_init_script = api_token_initialization_script(&api_token);
-
     tauri::Builder::default()
-        .plugin(
-            tauri::plugin::Builder::<tauri::Wry, ()>::new("dbcare-auth")
-                .js_init_script(auth_init_script)
-                .build(),
-        )
         // 1) 단일 인스턴스 — 두 번째 실행 시 기존 창 포커스 + 즉시 종료
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
             if let Some(window) = app.get_webview_window("main") {
@@ -560,62 +581,65 @@ pub fn run() {
 
             let handle = app.handle().clone();
 
-            // 2) 8765 점유 검사 — 좀비/타서버 차단
-            match inspect_backend_port(BACKEND_PORT, &instance_id) {
-                Ok(BackendPortState::Available) => {}
-                Ok(BackendPortState::CurrentInstance) => {
-                    log::info!("현재 인스턴스 백엔드가 이미 실행 중이므로 spawn 을 생략합니다.");
-                    return Ok(());
-                }
-                Err(message) => {
-                    show_error_dialog("DB-care 시작 실패", &message);
+            // 2) 포트 결정 (8765 우선, 점유 시 빈 포트로 폴백)
+            let launch = match decide_backend_launch(PREFERRED_PORT, &instance_id) {
+                Ok(plan) => plan,
+                Err(e) => {
+                    show_error_dialog("DB-care 시작 실패", &e);
                     std::process::exit(1);
                 }
-            }
+            };
+            let port = launch.port();
 
-            // 3) Python 백엔드 spawn
-            let mut backend = match spawn_backend(&handle, &api_token, &instance_id) {
-                Ok(backend) => {
-                    log::info!("백엔드 spawn 성공 pid={}", backend.child.id());
-                    backend
-                }
-                Err(e) => {
+            // 3) 새로 spawn 해야 하면 백엔드 띄우고 /health 대기. 기존 인스턴스면 생략.
+            if let BackendLaunchPlan::Spawn { port } = launch {
+                let mut backend = match spawn_backend(&handle, &api_token, &instance_id, port) {
+                    Ok(backend) => {
+                        log::info!("백엔드 spawn 성공 pid={} port={}", backend.child.id(), port);
+                        backend
+                    }
+                    Err(e) => {
+                        show_error_dialog(
+                            "DB-care 시작 실패",
+                            &format!(
+                                "Python 백엔드 실행 파일을 찾을 수 없습니다.\n\n{}\n\n프로그램을 다시 설치해주세요.",
+                                e
+                            ),
+                        );
+                        std::process::exit(1);
+                    }
+                };
+
+                log::info!("백엔드 /health 대기 시작 (port={}, 최대 {}초)", port, BACKEND_TIMEOUT_SECS);
+                if !wait_for_backend(
+                    &mut backend.child,
+                    port,
+                    &instance_id,
+                    Duration::from_secs(BACKEND_TIMEOUT_SECS),
+                ) {
+                    terminate_backend_process(backend, "startup health check failed");
                     show_error_dialog(
                         "DB-care 시작 실패",
                         &format!(
-                            "Python 백엔드 실행 파일을 찾을 수 없습니다.\n\n{}\n\n프로그램을 다시 설치해주세요.",
-                            e
+                            "백엔드 서버가 {}초 내에 올바르게 응답하지 않았습니다.\n\n흔한 원인:\n  • 백신이 _internal 폴더 파일을 격리\n  • Microsoft Visual C++ 2015-2022 재배포 패키지 미설치\n  • 디스크가 너무 느림\n\n환자 데이터 폴더: %APPDATA%\\DB-care\\\n로그 파일: %APPDATA%\\DB-care\\backend.log",
+                            BACKEND_TIMEOUT_SECS
                         ),
                     );
                     std::process::exit(1);
                 }
-            };
+                log::info!("백엔드 /health OK — UI 준비");
+                // 기존 검증된 패턴: 변수 바인딩 후 .0 접근 (State Deref).
+                let state = handle.state::<BackendHandle>();
+                *state.0.lock().unwrap() = Some(backend);
+            }
 
-            // 4) /health 대기 (instance_id 검증 + child.try_wait 조기 종료 감지)
-            log::info!("백엔드 /health 대기 시작 (최대 {}초)", BACKEND_TIMEOUT_SECS);
-            if !wait_for_backend(
-                &mut backend.child,
-                BACKEND_PORT,
-                &instance_id,
-                Duration::from_secs(BACKEND_TIMEOUT_SECS),
-            ) {
-                terminate_backend_process(backend, "startup health check failed");
-                show_error_dialog(
-                    "DB-care 시작 실패",
-                    &format!(
-                        "백엔드 서버가 {}초 내에 올바르게 응답하지 않았습니다.\n\n흔한 원인:\n  • 이전 세션의 dbcare-backend.exe 가 남아 있음\n  • 백신이 _internal 폴더 파일을 격리\n  • Microsoft Visual C++ 2015-2022 재배포 패키지 미설치\n  • 디스크가 너무 느림\n\n환자 데이터 폴더: %APPDATA%\\DB-care\\\n로그 파일: %APPDATA%\\DB-care\\launcher.log",
-                        BACKEND_TIMEOUT_SECS
-                    ),
-                );
+            // 4) 결정된 포트로 메인 윈도우 동적 생성 (토큰은 init script 로 주입)
+            if let Err(e) = create_main_window(app, &api_token, port) {
+                kill_backend(&handle, "main window creation failed");
+                show_error_dialog("DB-care 시작 실패", &e);
                 std::process::exit(1);
             }
-            log::info!("백엔드 /health OK — UI 준비");
 
-            // 5) backend 핸들을 상태에 저장 (종료 시 kill 용)
-            let state = handle.state::<BackendHandle>();
-            *state.0.lock().unwrap() = Some(backend);
-
-            // 6) 메인 윈도우는 tauri.conf.json 의 windows[0] 설정으로 자동 생성됨.
             Ok(())
         })
         .on_window_event(|window, event| {
