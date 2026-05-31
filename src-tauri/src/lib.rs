@@ -328,6 +328,31 @@ fn decide_backend_launch(port: u16, instance_id: &str) -> Result<BackendLaunchPl
     }
 }
 
+/// dbcare-backend.exe 를 dir 하위에서 재귀 탐색 (depth 제한). 어떤 번들 구조든 대응.
+fn find_backend_exe_recursive(dir: &std::path::Path, depth: usize) -> Option<std::path::PathBuf> {
+    if depth == 0 {
+        return None;
+    }
+    let entries = std::fs::read_dir(dir).ok()?;
+    let mut subdirs = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_file() {
+            if path.file_name().and_then(|n| n.to_str()) == Some("dbcare-backend.exe") {
+                return Some(path);
+            }
+        } else if path.is_dir() {
+            subdirs.push(path);
+        }
+    }
+    for sub in subdirs {
+        if let Some(found) = find_backend_exe_recursive(&sub, depth - 1) {
+            return Some(found);
+        }
+    }
+    None
+}
+
 /// Python backend sidecar 시작.
 /// PyInstaller 가 만든 `dbcare-backend.exe` 가 같은 폴더 (또는 _internal) 에 있다고 가정.
 fn spawn_backend(
@@ -342,36 +367,58 @@ fn spawn_backend(
         .ok_or("부모 디렉토리 없음")?
         .to_path_buf();
 
+    // v2.1.10 (배포 fix): Tauri 2 의 resources(["resources/**/*"]) 는 설치 시
+    // <resource_dir>/resources/dbcare-backend/dbcare-backend.exe 로 들어간다.
+    // 이전엔 resources/ 세그먼트가 빠진 경로만 탐색해 "찾을 수 없음" 실패.
+    // → resources/ 변형 모두 추가 + 못 찾으면 재귀 탐색(depth 4) fallback.
     let mut candidates = vec![
         exe_dir.join("dbcare-backend.exe"),
         exe_dir.join("_internal").join("dbcare-backend.exe"),
+        exe_dir.join("dbcare-backend").join("dbcare-backend.exe"),
         exe_dir.join("backend").join("dbcare-backend.exe"),
+        exe_dir.join("resources").join("dbcare-backend").join("dbcare-backend.exe"),
     ];
 
     if let Ok(resource_dir) = app.path().resource_dir() {
         candidates.push(resource_dir.join("dbcare-backend.exe"));
+        candidates.push(resource_dir.join("dbcare-backend").join("dbcare-backend.exe"));
         candidates.push(resource_dir.join("backend").join("dbcare-backend.exe"));
+        // ★ 핵심: Tauri resources glob 이 유지하는 resources/ 세그먼트 포함 경로
         candidates.push(
             resource_dir
+                .join("resources")
                 .join("dbcare-backend")
                 .join("dbcare-backend.exe"),
         );
     }
 
-    let backend_exe = candidates
-        .iter()
-        .find(|p| p.exists())
-        .ok_or_else(|| {
-            format!(
-                "dbcare-backend.exe 를 찾을 수 없습니다. 시도한 경로:\n{}",
-                candidates
-                    .iter()
-                    .map(|p| format!("  - {}", p.display()))
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            )
-        })?
-        .clone();
+    let mut backend_exe = candidates.iter().find(|p| p.exists()).cloned();
+
+    // fallback: 알려진 경로에 없으면 설치 루트/리소스 디렉토리에서 재귀 탐색
+    if backend_exe.is_none() {
+        let mut roots: Vec<std::path::PathBuf> = vec![exe_dir.clone()];
+        if let Ok(rd) = app.path().resource_dir() {
+            roots.push(rd);
+        }
+        for root in &roots {
+            if let Some(found) = find_backend_exe_recursive(root, 4) {
+                log::info!("재귀 탐색으로 backend 발견: {}", found.display());
+                backend_exe = Some(found);
+                break;
+            }
+        }
+    }
+
+    let backend_exe = backend_exe.ok_or_else(|| {
+        format!(
+            "dbcare-backend.exe 를 찾을 수 없습니다. 시도한 경로:\n{}",
+            candidates
+                .iter()
+                .map(|p| format!("  - {}", p.display()))
+                .collect::<Vec<_>>()
+                .join("\n")
+        )
+    })?;
 
     log::info!("백엔드 spawn: {}", backend_exe.display());
 
