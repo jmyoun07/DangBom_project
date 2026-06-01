@@ -583,6 +583,10 @@ fn create_main_window(app: &tauri::App, api_token: &str, port: u16) -> Result<()
         .min_inner_size(1200.0, 720.0)
         .resizable(true)
         .visible(true)
+        // v2.1.11 (UX): Tauri 기본 OS 드래그드롭 핸들러를 끈다.
+        // 이걸 꺼야 WebView 안의 HTML5 ondrop (CSV 드롭존) 이 동작한다.
+        // (Tauri 2.11.1: disable_drag_drop_handler() — drag_drop_enabled 메서드 없음)
+        .disable_drag_drop_handler()
         .initialization_script(api_token_initialization_script(api_token, port))
         .build()
         .map_err(|e| format!("메인 윈도우 생성 실패: {}", e))?;

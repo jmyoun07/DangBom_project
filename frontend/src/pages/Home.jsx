@@ -141,9 +141,10 @@ export default function Home() {
     try {
       const formData = new FormData();
       formData.append('file', file);
-      const res = await api.post('/upload/csv', formData, {
-        headers: { 'Content-Type': 'multipart/form-data' },
-      });
+      // v2.1.11: Content-Type 을 수동 지정하지 않는다.
+      // axios/브라우저가 multipart boundary 를 자동으로 넣게 둬야 서버 파싱이 안정적.
+      // 대용량 CSV 대비 업로드 타임아웃을 넉넉히 (기본 10초 → 120초).
+      const res = await api.post('/upload/csv', formData, { timeout: 120000 });
       const data = res.data.data || {};
       const validation = data.validation || {};
       setFeedback({
