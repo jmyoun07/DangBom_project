@@ -163,16 +163,30 @@ CSV_COLUMN_MAP = {
 }
 
 
+def _is_blank_cell(value) -> bool:
+    """None / NaN / NaT / pd.NA 등 결측 셀을 통일 판정.
+    v2.1.12 (엑셀 지원): string dtype 컬럼의 결측은 pd.NA(=float 아님)라
+    기존 isinstance(float) 체크로는 못 잡혀서 헬퍼로 통일."""
+    if value is None:
+        return True
+    try:
+        return bool(pd.isna(value))
+    except (TypeError, ValueError):
+        return False
+
+
 def _parse_date(value):
-    """날짜 값을 date 객체로 변환. 실패 시 None."""
-    if value is None or (isinstance(value, float) and pd.isna(value)):
+    """날짜 값을 date 객체로 변환. 실패 시 None.
+    엑셀은 날짜를 datetime 으로 자동 변환하므로 그 경우도 처리."""
+    if _is_blank_cell(value):
         return None
     if isinstance(value, date) and not isinstance(value, datetime):
         return value
     if isinstance(value, datetime):
         return value.date()
     try:
-        return pd.to_datetime(value).date()
+        parsed = pd.to_datetime(value)
+        return None if pd.isna(parsed) else parsed.date()
     except Exception:
         return None
 
@@ -201,11 +215,9 @@ def _coerce_numeric(value):
       - '-', 'N/A', 'na', '없음', '미검사', '#NULL!' → None
     실패 시 None 반환 (insert 에서 NULL 로 처리).
     """
-    if value is None:
+    if _is_blank_cell(value):
         return None
     if isinstance(value, (int, float)):
-        if isinstance(value, float) and pd.isna(value):
-            return None
         return float(value)
     s = str(value).strip().replace("\u3000", "").replace(",", "")
     if not s:
@@ -238,7 +250,7 @@ def _row_to_patient_data(row, idx: int, column_lookup: dict) -> dict:
     patient_data = {}
     for csv_col, db_field in column_lookup.items():
         val = row.get(csv_col)
-        if val is None or (isinstance(val, float) and pd.isna(val)):
+        if _is_blank_cell(val):
             continue
         if db_field in ("exam_date", "dob"):
             parsed = _parse_date(val)
@@ -298,20 +310,37 @@ async def upload_csv(
       6. 단일 commit
       7. ML risk_level 계산은 BackgroundTasks 로 비동기 처리
     """
-    # v2.1.9 (감사): 서버측 검증 — 확장자 + MIME + 크기 (프론트 검증만 믿지 않음)
-    if not (file.filename or "").lower().endswith(".csv"):
-        raise HTTPException(status_code=400, detail="CSV 파일만 업로드 가능합니다.")
+    # v2.1.9 (감사): 서버측 검증 — 확장자 + 크기 (프론트 검증만 믿지 않음)
+    # v2.1.12: 엑셀(.xlsx) 지원 추가.
+    filename = (file.filename or "").lower()
+    is_csv = filename.endswith(".csv")
+    is_xlsx = filename.endswith(".xlsx")
+    if not (is_csv or is_xlsx):
+        raise HTTPException(status_code=400, detail="CSV 또는 엑셀(.xlsx) 파일만 업로드 가능합니다.")
 
     content = await file.read()
-    MAX_CSV_BYTES = 20 * 1024 * 1024  # 20MB
-    if len(content) > MAX_CSV_BYTES:
-        raise HTTPException(status_code=413, detail=f"CSV 파일이 너무 큽니다 (최대 {MAX_CSV_BYTES // 1024 // 1024}MB).")
-    if not content.strip():
-        raise HTTPException(status_code=400, detail="빈 CSV 파일입니다.")
+    MAX_UPLOAD_BYTES = 20 * 1024 * 1024  # 20MB
+    if len(content) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail=f"파일이 너무 큽니다 (최대 {MAX_UPLOAD_BYTES // 1024 // 1024}MB).")
+    if not content:
+        raise HTTPException(status_code=400, detail="빈 파일입니다.")
+
+    # 차트번호/연락처/성별은 숫자로 오인되지 않게 문자열로 보존
+    # (예: 차트번호 "001" 이 1.0 으로 바뀌는 것 방지). 원본 컬럼명(영문/한글) 모두 지정.
+    string_dtypes = {
+        "name": "string", "이름": "string",
+        "chart_no": "string", "차트번호": "string",
+        "phone": "string", "연락처": "string", "전화번호": "string",
+        "sex": "string", "성별": "string",
+    }
+    file_label = "CSV" if is_csv else "엑셀"
     try:
-        df = pd.read_csv(io.BytesIO(content))
+        if is_csv:
+            df = pd.read_csv(io.BytesIO(content), dtype=string_dtypes)
+        else:
+            df = pd.read_excel(io.BytesIO(content), engine="openpyxl", sheet_name=0, dtype=string_dtypes)
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"CSV 파싱 실패: {str(e)}")
+        raise HTTPException(status_code=400, detail=f"{file_label} 파싱 실패: {str(e)}")
     MAX_ROWS = 10000
     if len(df) > MAX_ROWS:
         raise HTTPException(status_code=413, detail=f"행이 너무 많습니다 (최대 {MAX_ROWS}행).")

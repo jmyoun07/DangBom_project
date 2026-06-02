@@ -10,20 +10,20 @@ import ManualPatientForm from '../components/ManualPatientForm';
 const AUTO_REDIRECT_MS = 1500;
 
 // CSV 검증 한계 (J3)
-const MAX_CSV_SIZE_BYTES = 10 * 1024 * 1024; // 10 MB
-const ACCEPTED_MIME = ['text/csv', 'application/vnd.ms-excel', 'application/csv', 'text/plain', '']; // 일부 브라우저는 빈 문자열
+const MAX_CSV_SIZE_BYTES = 20 * 1024 * 1024; // 20 MB (v2.2.1: 엑셀 지원 + 상향)
+const ACCEPTED_MIME = ['text/csv', 'application/vnd.ms-excel', 'application/csv', 'text/plain', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'application/octet-stream', '']; // 일부 브라우저는 빈 문자열
 
 function validateCsvFile(f) {
   if (!f) return '\uD30C\uC77C\uC744 \uC120\uD0DD\uD558\uC138\uC694.';
   const lower = f.name.toLowerCase();
-  if (!lower.endsWith('.csv')) return 'CSV \uD30C\uC77C\uB9CC \uC5C5\uB85C\uB4DC \uAC00\uB2A5\uD569\uB2C8\uB2E4 (.csv \uD655\uC7A5\uC790).';
+  if (!lower.endsWith('.csv') && !lower.endsWith('.xlsx')) return 'CSV \uD30C\uC77C\uB9CC \uC5C5\uB85C\uB4DC \uAC00\uB2A5\uD569\uB2C8\uB2E4 (.csv \uD655\uC7A5\uC790).';
   if (f.size > MAX_CSV_SIZE_BYTES) {
     const mb = (f.size / 1024 / 1024).toFixed(1);
     return `\uD30C\uC77C\uC774 \uB108\uBB34 \uD07D\uB2C8\uB2E4 (${mb}MB). \uCD5C\uB300 10MB \uAE4C\uC9C0 \uC9C0\uC6D0\uB429\uB2C8\uB2E4.`;
   }
   if (f.size === 0) return '\uBE48 \uD30C\uC77C\uC785\uB2C8\uB2E4.';
   // MIME 체크는 보조 수단 (일부 OS/브라우저에서 type 이 비어있음)
-  if (f.type && !ACCEPTED_MIME.includes(f.type) && !f.type.includes('csv')) {
+  if (f.type && !ACCEPTED_MIME.includes(f.type) && !f.type.includes('csv') && !f.type.includes('spreadsheet')) {
     return `\uC9C0\uC6D0\uB418\uC9C0 \uC54A\uB294 \uD30C\uC77C \uD615\uC2DD\uC785\uB2C8\uB2E4 (${f.type}). CSV \uB9CC \uC5C5\uB85C\uB4DC \uAC00\uB2A5\uD569\uB2C8\uB2E4.`;
   }
   return null;
@@ -93,7 +93,12 @@ export default function Home() {
     setCreatedCount(0);
     setFeedback({ errors: [], warnings: [], successes: [] });
     setStatusMessage(`\uD30C\uC77C \uC120\uD0DD\uB428: ${f.name} (${(f.size / 1024).toFixed(1)} KB)`);
-    // Preview first line columns
+    // v2.2.1: \uC5D1\uC140(.xlsx)\uC740 \uBC14\uC774\uB108\uB9AC\uB77C \uBE0C\uB77C\uC6B0\uC800 \uBBF8\uB9AC\uBCF4\uAE30 \uBD88\uAC00 \u2192 \uC2A4\uD0B5, \uC11C\uBC84 \uB9E4\uD551\uC774 \uAD8C\uC704.
+    if (isXlsxFile(f)) {
+      setMapping([]);
+      return;
+    }
+    // Preview first line columns (CSV)
     const reader = new FileReader();
     reader.onload = (e) => {
       const firstLine = String(e.target.result).split('\n')[0] || '';
@@ -354,7 +359,7 @@ export default function Home() {
             <input
               ref={inputRef}
               type="file"
-              accept=".csv,text/csv,application/vnd.ms-excel"
+              accept=".csv,.xlsx,text/csv,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
               className="hidden"
               onChange={onSelect}
               aria-hidden="true"

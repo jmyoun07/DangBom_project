@@ -35,7 +35,7 @@ hiddenimports = [
 
 for pkg in [
     'sklearn', 'xgboost', 'lightgbm', 'catboost',
-    'imblearn', 'pandas', 'numpy', 'joblib', 'scipy',
+    'imblearn', 'pandas', 'openpyxl', 'et_xmlfile', 'numpy', 'joblib', 'scipy',
     'threadpoolctl', 'fastapi', 'starlette', 'pydantic', 'pydantic_core',
     'sqlalchemy', 'uvicorn', 'anyio', 'sniffio', 'h11', 'click',
     'typing_extensions', 'annotated_types', 'idna', 'certifi',

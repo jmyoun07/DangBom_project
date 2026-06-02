@@ -1,6 +1,6 @@
 [package]
 name = "dbcare"
-version = "2.1.11"
+version = "2.2.1"
 description = "DB-care — 당뇨 합병증 예측 프로그램"
 authors = ["DB-care"]
 license = ""
