@@ -50,6 +50,7 @@ export default function RiskCard({
   available = true,
   percentile = null,
   clinicalFlags = [],
+  modelRole = 'clinical',
 }) {
   // v2.1.2 \u2014 KNHANES \uB3D9\uC77C \uC5F0\uB839\uB300 \uBC31\uBD84\uC704 \uD45C\uC2DC.
   // percentile = { percentile: 73, top_percent: 27, bucket: "60-69", n: 1299 }
@@ -57,7 +58,11 @@ export default function RiskCard({
   const flags = Array.isArray(clinicalFlags)
     ? clinicalFlags.filter((f) => f && typeof f === 'object' && f.message)
     : [];
+  // v2.2.2 (F5): 등급을 끌어올린 임상 사유(affects_level/danger)는 항상 노출 →
+  //   "정상 수치인데 왜 위험?" 의 답을 클릭 없이 바로 보여준다. (예측 로딩 타이밍과 무관)
+  const primaryReason = flags.find((f) => f?.affects_level || f?.severity === 'danger');
   const [flagsOpen, setFlagsOpen] = useState(false);
+  const isScreening = modelRole === 'screening';
   const severity = flagSeverity(flags);
   const flagStyle = flagStyles[severity];
   const FlagIcon = flagStyle.Icon;
@@ -86,7 +91,17 @@ export default function RiskCard({
             </button>
           )}
           {available ? (
-            <RiskBadge level={level} />
+            <div className="flex items-center gap-1">
+              {isScreening && (
+                <span
+                  className="inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-semibold bg-slate-100 text-slate-500 border border-slate-200 whitespace-nowrap"
+                  title="\uC800\uC815\uD655\uB3C4 \uC120\uBCC4 \uBAA8\uB378 \u2014 \uCC38\uACE0\uC6A9, \uC784\uC0C1 \uD655\uC778 \uD544\uC694"
+                >
+                  {'\uC120\uBCC4'}
+                </span>
+              )}
+              <RiskBadge level={level} />
+            </div>
           ) : (
             <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium bg-gray-100 text-gray-400 border border-gray-200 whitespace-nowrap">
               {'\uBD84\uC11D \uC900\uBE44\uC911'}
@@ -102,6 +117,16 @@ export default function RiskCard({
             <span className="text-sm font-bold text-gray-800">{metricValue}</span>
           </div>
           <RiskBar score={score || 0} level={level} />
+          {primaryReason && (
+            <p className="mt-1.5 text-[10px] text-amber-700 leading-tight">
+              {primaryReason.message}
+            </p>
+          )}
+          {isScreening && (
+            <p className="mt-1 text-[10px] text-slate-400 leading-tight">
+              {'선별용 모델(정확도 제한적) — 임상 확인 필요'}
+            </p>
+          )}
           {flagsOpen && flags.length > 0 && (
             <div className={`mt-3 rounded-lg border px-3 py-2 ${flagStyle.panel}`}>
               <div className="flex items-center gap-1.5 text-[11px] font-semibold mb-1">

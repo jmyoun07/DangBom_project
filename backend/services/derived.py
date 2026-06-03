@@ -69,6 +69,33 @@ def _age_from_dob(dob: date, on: date | None = None) -> int | None:
     return None
 
 
+def current_age(data: dict, on: date | None = None) -> int | None:
+    """오늘(or on) 기준 만나이 — dob 우선, 없으면 저장 age fallback.
+
+    v2.2.2 (H3): PatientDetail/List 표시 나이와 예측에 쓰는 나이를 동일 소스로 통일.
+    저장된 age 컬럼은 검사일(exam_date) 시점 나이라 시간이 지나면 표시 나이와 어긋난다.
+    """
+    dob = _to_date(data.get("dob"))
+    if dob is not None:
+        a = _age_from_dob(dob, on)
+        if a is not None:
+            return a
+    fa = _f(data.get("age"))
+    return int(fa) if fa is not None else None
+
+
+def current_dm_duration(data: dict, on: date | None = None) -> int | None:
+    """현재 만나이 − 진단 시 나이. fallback: 저장 dm_duration."""
+    age = current_age(data, on)
+    diag = _f(data.get("dm_diagnosis_age"))
+    if age is not None and diag is not None:
+        d = age - int(diag)
+        if 0 <= d <= 120:
+            return d
+    fd = _f(data.get("dm_duration"))
+    return int(fd) if fd is not None else None
+
+
 def _ckd_epi_egfr(cr: float, age: float, sex: str) -> float | None:
     """
     CKD-EPI 2009 공식. sex: 'M' / 'F' (대소문자 무관).
@@ -139,7 +166,10 @@ def compute_derived(data: dict) -> dict:
     #   2순위: Friedewald 계산 (TG < 400 에서만 신뢰)
     ldl_calc = None
     if chol is not None and hdl is not None and tg is not None and tg < 400:
-        ldl_calc = round(chol - hdl - tg / 5.0, 1)
+        _ldl = round(chol - hdl - tg / 5.0, 1)
+        # v2.2.2 (M8): 음수 LDL = HDL>총콜레스테롤 등 비정상 입력 → 계산 불가로 처리.
+        #   음수값이 "정상 LDL" 처럼 표시되는 의료 오해를 막는다.
+        ldl_calc = _ldl if _ldl >= 0 else None
     if out.get("ldl") is None and ldl_calc is not None:
         out["ldl"] = ldl_calc
     # ldl_calc 컬럼은 항상 계산값 저장 (모델 입력용 — 참조 지표)
@@ -151,7 +181,9 @@ def compute_derived(data: dict) -> dict:
 
     # non-HDL
     if chol is not None and hdl is not None:
-        out["non_hdl"] = round(chol - hdl, 1)
+        _nonhdl = round(chol - hdl, 1)
+        if _nonhdl >= 0:  # v2.2.2 (M8): HDL>총콜레스테롤 비정상 입력 시 음수 방지
+            out["non_hdl"] = _nonhdl
 
     # HE_insulin 추정 (c_peptide × 3.0) — 하위호환용 저장
     # 모델 v2.2 는 c_peptide 를 직접 사용하지만 기존 UI/CSV 가 he_insulin 필드를
@@ -180,8 +212,8 @@ def compute_derived(data: dict) -> dict:
     if bmi is not None and out.get("homa_ir") is not None:
         out["bmi_homa_ir"] = round(bmi * out["homa_ir"], 3)
 
-    # Pulse pressure
-    if sbp is not None and dbp is not None:
+    # Pulse pressure — v2.2.2 (M8): SBP < DBP 비정상 입력이면 음수 맥압 대신 미산출.
+    if sbp is not None and dbp is not None and sbp >= dbp:
         out["pulse_pressure"] = round(sbp - dbp, 1)
 
     # Hypertension (한국 고혈압학회 기준: SBP ≥ 140 OR DBP ≥ 90)

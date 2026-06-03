@@ -20,7 +20,13 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 
+from services.derived import current_age as _current_age_calc
+from services.derived import current_dm_duration as _current_dm_dur_calc
+
 logger = logging.getLogger("dbcare.predictor")
+
+# v2.2.2 (H4): 신규 3개는 저AUC(0.61~0.73) 선별용 — 임상 확정 모델과 구분 표시.
+SCREENING_MODELS = {"neuropathy", "dementia", "cerebrovascular"}
 
 # v2.1.8 — 모델 pkl 의 sklearn 학습 버전이 런타임과 달라 발생하는
 # InconsistentVersionWarning 억제. 실측 검증 결과 KNNImputer/StandardScaler/
@@ -274,6 +280,8 @@ def patient_to_features(patient_data: dict) -> dict:
     모델이 필요로 하는 변수만 pkg['features'] 기준으로 골라서 사용하므로
     여기서는 가능한 모든 파생변수를 계산해서 반환한다.
     """
+    # v2.2.2 (H3): age/dm_duration 정규화는 predict_all 진입부(_normalize_age_duration)에서
+    #   1회 수행하므로 여기서는 정규화된 d 를 그대로 읽는다 (features·floor·percentile 일관).
     d = patient_data
     sex_code = 1 if d.get("sex") == "M" else 2
 
@@ -310,14 +318,24 @@ def patient_to_features(patient_data: dict) -> dict:
     ldl_calc = _safe_num(d.get("ldl"), None)
     if ldl_calc is None:
         ldl_calc = (chol - hdl - tg / 5.0) if tg < 400 else np.nan
+    # v2.2.2 (M8): 모델 입력 경로도 음수 파생 차단 (HDL>총콜레스테롤 / SBP<DBP 비정상 입력).
+    if ldl_calc is not None and ldl_calc < 0:
+        ldl_calc = np.nan
     non_hdl = chol - hdl
+    if non_hdl < 0:
+        non_hdl = np.nan
     egfr = _calc_egfr(crea, age, sex_code)
     pp = sbp - dbp
+    if pp < 0:
+        pp = np.nan
 
     dm_diag_age = _safe_num(d.get("dm_diagnosis_age"), None)
     dm_dur = _safe_num(d.get("dm_duration"), None)
     if dm_dur is None and dm_diag_age is not None:
         dm_dur = age - dm_diag_age
+    # v2.2.2 (H3): 음수/비현실 이환기간 차단 (미래 dob·age 0 테스트환자 등 → imputer 처리)
+    if dm_dur is not None and not (0 <= dm_dur <= 120):
+        dm_dur = np.nan
 
     # 수면 7시간 이상 binary 파생 — v2.1.3 (Codex C1): "7:30" 문자열도 안전 처리
     sleep_hrs = _safe_num(d.get("sleep_hours"), None)
@@ -780,6 +798,52 @@ def apply_clinical_floor(predictions: dict, patient_data: dict) -> dict:
     return predictions
 
 
+def clinical_floor_levels(patient_data: dict, diseases) -> dict:
+    """주어진 값으로 임상 안전망 7룰이 강제하는 '최소 등급'만 계산한다.
+
+    점수/모델 예측 없이 floor 등급만 필요할 때 사용 (예: 시나리오 집중관리에서
+    개선된 수치 hba1c_after/cpep_after 에 대한 안전망 등급 재평가). apply_clinical_floor
+    를 단일 진실 소스로 재사용하므로 7룰이 중복 정의되지 않는다.
+
+    Args:
+        patient_data: hba1c/c_peptide/egfr/sbp/dbp/ldl/dm_duration 등 평가할 값.
+        diseases: 등급을 받을 질환 키 목록 (predict_all 의 full name 권장).
+
+    Returns:
+        {disease: '고위험'|'중위험'|None}.  None = 해당 질환 안전망 미발동.
+    """
+    stub = {d: {"available": True, "level": "저위험", "raw_score": 0.0} for d in diseases}
+    try:
+        apply_clinical_floor(stub, patient_data)
+    except Exception as e:
+        logger.error("[SAFETY] clinical_floor_levels 실패: %s", e)
+        return {d: None for d in diseases}
+    out = {}
+    for d in diseases:
+        lvl = stub[d].get("level")
+        out[d] = lvl if lvl in ("중위험", "고위험") else None
+    return out
+
+
+def _floor_band_score(score, level, model_name, age=None):
+    """진행바/게이지용 display 점수를 등급(level) 밴드 하한까지 올린다 (강등 없음).
+
+    임상 안전망으로 level 만 승격되고 raw score 는 낮을 때(예: HbA1c≥11 로 고위험인데
+    ML score 1.0) "고위험 배지 + 1/100 바" 모순을 막는다. _classify_risk 와 동일 경계:
+      - 고위험: score ≥ max(60, threshold)
+      - 중위험: threshold ≤ score < 60
+    이미 밴드 안이면 no-op. raw_score(score)는 건드리지 않고 별도 display_score 로만 쓴다.
+    """
+    if score is None or level not in ("중위험", "고위험"):
+        return round(score, 1) if score is not None else score
+    th = get_disease_threshold(model_name, age=age)
+    if level == "고위험":
+        lo = max(60.0, th or 60.0)
+        return round(min(max(score, lo), 99.0), 1)
+    lo = th or MID_RISK_FALLBACK
+    return round(min(max(score, lo), 59.9), 1)
+
+
 def _unavailable_prediction(name: str, reason: str = "model_unavailable") -> dict:
     """모델 로드/예측 실패 시 — 가짜 더미값 대신 '예측 불가' 를 명확히 반환.
 
@@ -960,8 +1024,12 @@ def predict_single(model_name: str, features: dict) -> dict:
         result = {
             "score": score,
             "raw_score": score,  # v2.1.3 (Codex 리뷰): C-pep 가산 등 보정 전 ML 원본 점수
+            # v2.2.2 (H1): 진행바/게이지용 display 점수. floor 승격 시 predict_all 최종패스에서 갱신.
+            "display_score": score,
             "level": level,
             "available": True,
+            # v2.2.2 (H4): 신규 3개 저AUC 모델을 '선별(screening)' 로 표기 → UI 가 "참고용·임상확인 필요" 배지.
+            "model_role": "screening" if model_name in SCREENING_MODELS else "clinical",
             "model_threshold": round(float(model_threshold) * (100 if float(model_threshold) <= 1 else 1), 2) if model_threshold is not None else None,
             "risk_source": "ml_model",
             "risk_sources": ["ml_model"],  # 다중 출처 누적 (HbA1c safety floor 등)
@@ -1003,8 +1071,27 @@ def cpep_bidirectional_adjust(predictions: dict, c_peptide: float | None) -> dic
     return predictions
 
 
+def _normalize_age_duration(patient_data: dict) -> dict:
+    """v2.2.2 (H3): 현재 만나이/이환기간을 주입한 새 dict 반환.
+
+    features(patient_to_features) · 임상 안전망(apply_clinical_floor) · percentile 이
+    모두 동일한 '현재 나이'를 쓰도록 predict_all 진입부에서 1회 정규화한다.
+    (이전 버그: features 는 현재나이, floor 는 저장 dm_duration 을 읽어 Rule4 가 어긋남)
+    """
+    d = dict(patient_data)
+    ca = _current_age_calc(d)
+    if ca is not None:
+        d["age"] = ca
+        cd = _current_dm_dur_calc(d)
+        if cd is not None:
+            d["dm_duration"] = cd
+    return d
+
+
 def predict_all(patient_data: dict) -> dict:
     """6개 알고리즘 전체 예측. v2.1.2 — KNHANES 동일 연령대 percentile 자동 주입."""
+    # v2.2.2 (H3): 현재 age/dm_duration 정규화 → features/floor/percentile 전부 일관.
+    patient_data = _normalize_age_duration(patient_data)
     features = patient_to_features(patient_data)
 
     # v2.1.7 — 6개 모델 모두 ML 추론 (신규 3개 패키지 _load_model 에서 unwrap)
@@ -1036,6 +1123,15 @@ def predict_all(patient_data: dict) -> dict:
         for info in result.values():
             if isinstance(info, dict) and info.get("available"):
                 info.setdefault("warnings", []).append("clinical_safety_net_unavailable")
+
+    # v2.2.2 (H1): floor 로 level 승격된 합병증의 display_score 를 밴드 하한까지 올려
+    #   "고위험 배지 + 짧은 바" 모순 제거. raw_score/score 는 ML 원본 유지(불변).
+    floor_age = _as_float(patient_data.get("age")) or features.get("age")
+    for name, info in result.items():
+        if isinstance(info, dict) and info.get("available") and info.get("score") is not None:
+            info["display_score"] = _floor_band_score(
+                info["score"], info.get("level"), name, age=floor_age
+            )
 
     # KNHANES 코호트 대비 percentile (동일 연령대) — 부가 정보, 실패해도 예측엔 영향 없음.
     try:

@@ -309,7 +309,7 @@ export default function Dashboard() {
 
   // 예측 불명 시 → score 0, level = null (RiskGauge 는 "평가 중" 회색 표시)
   // backend `level` 우선 사용 (모델 threshold + safety floor 이미 반영됨). 없을 때만 scoreToLevel fallback.
-  const overallScore = highestRisk ? highestRisk[1].score : 0;
+  const overallScore = highestRisk ? (highestRisk[1].display_score ?? highestRisk[1].score) : 0;
   const overallLevel = highestRisk
     ? (highestRisk[1].level || scoreToLevel(highestRisk[1].score))
     : null;
@@ -470,10 +470,11 @@ export default function Dashboard() {
                 level={pred?.level}
                 metricLabel={card.metricLabel}
                 metricValue={getMetricValue(card.metricKey)}
-                score={pred?.score}
+                score={pred?.display_score ?? pred?.score}
                 available={pred?.available ?? false}
                 percentile={pred?.percentile}
                 clinicalFlags={pred?.clinical_flags}
+                modelRole={pred?.model_role}
               />
             );
           })}

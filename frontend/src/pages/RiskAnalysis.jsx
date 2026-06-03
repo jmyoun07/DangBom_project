@@ -426,7 +426,7 @@ export default function RiskAnalysis() {
           <div className="bg-blue-50 border border-blue-100 rounded-lg p-3 flex gap-2">
             <Lightbulb size={16} className="text-blue-500 shrink-0 mt-0.5" aria-hidden="true" />
             <p className="text-xs text-blue-900">
-              {'C-peptide \uC218\uCE58\uB97C 1%\uB9CC \uAC1C\uC120\uD574\uB3C4 \uD569\uBCD1\uC99D \uBC1C\uBCD1 \uC704\uD5D8\uC774 \uC720\uC758\uBBF8\uD558\uAC8C \uAC10\uC18C\uD558\uB294 \uD6A8\uACFC\uAC00 \uC2DC\uBBAC\uB808\uC774\uC158 \uB418\uC5C8\uC2B5\uB2C8\uB2E4.'}
+              {'HbA1c\uB97C 1%\uB9CC \uB0AE\uCD94\uC5B4\uB3C4 \uD569\uBCD1\uC99D \uBC1C\uBCD1 \uC704\uD5D8\uC774 \uC720\uC758\uBBF8\uD558\uAC8C \uAC10\uC18C\uD558\uACE0, C-peptide\uAC00 \uC815\uC0C1 \uBC94\uC704\uB85C \uD68C\uBCF5\uB420\uC218\uB85D \uAC1C\uC120 \uD6A8\uACFC\uAC00 \uD06C\uAC8C \uC2DC\uBBAC\uB808\uC774\uC158 \uB429\uB2C8\uB2E4.'}
             </p>
           </div>
         </div>

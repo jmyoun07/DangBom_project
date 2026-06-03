@@ -21,7 +21,8 @@ const modelAliases = {
 function readRadarDatum(data, key, pending) {
   const raw = data[key] ?? data[modelAliases[key]];
   if (raw && typeof raw === 'object') {
-    const numericScore = Number(raw.score ?? raw.value ?? 0);
+    // v2.2.2 (H1): 임상 안전망 반영된 display_score 우선 — 배지(level)와 축 길이 정합.
+    const numericScore = Number(raw.display_score ?? raw.score ?? raw.value ?? 0);
     const value = Number.isFinite(numericScore) ? numericScore : 0;
     return {
       value,

@@ -465,6 +465,37 @@ def find_by_chart(chart_no: str, db: Session = Depends(get_db)):
     return {"data": data, "success": True}
 
 
+# v2.2.2 (H2): PATCH 로 입력값 변경 시 재계산해야 하는 파생 컬럼.
+#   PURE: 순수 계산값 — 항상 재계산, 계산 불가(None)면 stale 제거 위해 None 으로 clear.
+#   SOFT: 계산값이지만 실측 제공 가능 — 계산되면 갱신, 불가하면 기존값 보존.
+#   'ldl'(병원 실측치)은 어느 쪽도 아님 → 그대로 보존.
+_PURE_DERIVED_FIELDS = (
+    "ldl_calc", "non_hdl", "egfr",
+    "homa_ir", "homa_beta", "tyg_index", "bmi_homa_ir", "pulse_pressure",
+)
+_SOFT_DERIVED_FIELDS = ("bmi", "he_insulin", "dm_duration")
+
+
+def _recompute_derived(patient: Patient) -> None:
+    """입력 필드 변경 후 파생 컬럼(eGFR/BMI/LDL_calc/HOMA/맥압 등)을 재계산해 stale 방지.
+    예측은 patient_to_features 가 즉석 계산하지만, 화면/CSV/유사사례는 DB 컬럼을 직접 읽으므로
+    여기서 컬럼까지 갱신해야 페이지 간 수치가 일치한다. (의료진 의아함 방지)
+
+    v2.2.2 (codex 라운드2): 편집 모달이 파생필드(age/bmi/he_insulin 등)를 항상 전송하므로
+    'changes 에 없을 때만' 재계산하면 영영 갱신 안 됨 → client 의 파생값은 무시하고 항상
+    원본 입력값으로 재계산한다. 계산 불가 시 PURE 는 None clear(=stale 제거), SOFT 는 기존 보존."""
+    raw = {c.name: getattr(patient, c.name) for c in patient.__table__.columns}
+    old_soft = {f: raw.get(f) for f in _SOFT_DERIVED_FIELDS}
+    for f in (*_PURE_DERIVED_FIELDS, *_SOFT_DERIVED_FIELDS):
+        raw[f] = None  # 비워서 compute_derived 가 client 값 무시하고 새로 계산
+    enriched = compute_derived(raw)
+    for f in _PURE_DERIVED_FIELDS:
+        setattr(patient, f, enriched.get(f))  # None 이면 clear → 잘못된 stale 값 제거
+    for f in _SOFT_DERIVED_FIELDS:
+        v = enriched.get(f)
+        setattr(patient, f, v if v is not None else old_soft[f])  # 계산 가능시 갱신, 아니면 보존
+
+
 @router.patch("/patients/{patient_id}")
 def update_patient(patient_id: int, body: PatientUpdate, background: BackgroundTasks, db: Session = Depends(get_db)):
     """환자 정보 부분 수정 — PatientDetail 페이지의 '데이터 수정' 모달에서 호출.
@@ -493,6 +524,10 @@ def update_patient(patient_id: int, body: PatientUpdate, background: BackgroundT
     for key, value in changes.items():
         if hasattr(patient, key):
             setattr(patient, key, value)
+
+    # ── 2.5) v2.2.2 (H2): 파생값(eGFR/BMI/LDL_calc/HOMA/맥압/이환기간) 재계산 ──
+    #   입력(cr·체중·지질·혈압 등) 변경이 화면 파생 수치에 반영되도록 DB 컬럼 갱신.
+    _recompute_derived(patient)
 
     # ── 3) 감사 로그 작성 (실제 변경된 필드만) ──
     for field, old, new in diffs:

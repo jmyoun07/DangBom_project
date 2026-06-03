@@ -9,9 +9,14 @@ from sqlalchemy.orm import Session
 
 from models.database import get_db, Patient
 from models.schemas import ScenarioRequest
+from services.derived import current_age as _current_age_calc
+from services.derived import current_dm_duration as _current_dm_dur_calc
 from ml.predictor import (
     predict_with_simulation,
+    predict_all,
     classify_disease_risk,
+    clinical_floor_levels,
+    get_disease_threshold,
     get_disease_thresholds,
 )
 
@@ -47,6 +52,43 @@ def _stable_offset(seed_key: str, lo: float, hi: float) -> float:
     h = int(hashlib.md5(seed_key.encode()).hexdigest()[:8], 16)
     frac = (h % 10000) / 10000.0  # 0.0 ~ 1.0
     return lo + frac * (hi - lo)
+
+
+# ── v2.2.2 (F2) — 임상 안전망 등급을 시나리오에 일관 반영하기 위한 유틸 ──
+# 대시보드(/predict → predict_all → apply_clinical_floor)는 level 을 승격하지만
+# score 는 바꾸지 않는다. 시나리오는 raw score 를 재분류하므로 floor 가 사라져
+# "대시보드 고위험 ↔ 시나리오 저위험" 불일치가 생긴다(F2). 아래 유틸로
+# 현재/방치 시나리오에 floor level 을 반영해 대시보드와 일치시킨다.
+_LEVEL_RANK = {"저위험": 0, "중위험": 1, "고위험": 2}
+
+
+def _max_level(a, b):
+    """더 위험한(상위) 등급 반환. None/빈값은 무시. 강등 절대 없음."""
+    if not a:
+        return b
+    if not b:
+        return a
+    return a if _LEVEL_RANK.get(a, 0) >= _LEVEL_RANK.get(b, 0) else b
+
+
+def _score_for_level(score, level, disease_key, age):
+    """display 점수를 목표 등급(level) 밴드 안으로 끌어올린다 (강등 없음).
+
+    classify_disease_risk 와 동일 경계를 사용해 배지(level)와 진행 바(score)가
+    어긋나지 않게 한다. 임상 안전망으로 등급이 승격됐는데 raw 점수가 낮으면
+    "고위험인데 바는 짧다" 는 모순이 생기므로, 점수도 해당 밴드 하한까지 올린다.
+      - 고위험: score ≥ max(60, threshold)
+      - 중위험: threshold ≤ score < 60
+      - 저위험: 변경 없음
+    이미 목표 등급 밴드에 있으면 no-op(원점수 유지).
+    """
+    if level == "고위험":
+        th = get_disease_threshold(disease_key, age=age) or 60.0
+        return round(_clamp(max(score, 60.0, th), 1, 99), 1)
+    if level == "중위험":
+        th = get_disease_threshold(disease_key, age=age) or 30.0
+        return round(_clamp(min(max(score, th), 59.9), 1, 99), 1)
+    return round(_clamp(score, 1, 99), 1)
 
 
 # v2.1.7 — 신규 3개 패키지 모델 (neuropathy/dementia/cerebrovascular) 연동 완료.
@@ -248,7 +290,8 @@ def scenario_simulate(body: ScenarioRequest, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Patient not found")
 
     pdict = _patient_to_dict(patient)
-    age = patient.age or 60
+    # v2.2.2 (H3): 표시/예측 나이 통일 — 현재 만나이(dob 기준), fallback 저장 age.
+    age = _current_age_calc(pdict) or patient.age or 60
     hba1c_current = patient.hba1c or 7.5
     cpep_current = patient.c_peptide or 2.0
 
@@ -279,6 +322,7 @@ def scenario_simulate(body: ScenarioRequest, db: Session = Depends(get_db)):
     }
 
     radar = {}
+    current_floor = {}  # v2.2.2 (F2): current_pred 의 floored level (대시보드와 동일 소스)
     for full_name, short_name in name_map.items():
         pred = current_pred.get(full_name, {})
         score = pred.get("score")
@@ -295,10 +339,27 @@ def scenario_simulate(body: ScenarioRequest, db: Session = Depends(get_db)):
             )
             # 미구현 모델은 ML 예측이 없으므로 sensitivity 로 슬라이더 변화 시각화
             score = round(_clamp(score + sensitivity, 1, 99), 1)
+            current_floor[short_name] = None  # 휴리스틱 모델은 안전망 등급 없음
         else:
             # 실 ML 점수 그대로 사용 (predict_with_simulation 이 이미 슬라이더 반영)
             score = round(_clamp(score, 1, 99), 1)
+            # v2.2.2 (F2): 대시보드와 동일한 floored level 보관 (안전망 반영용)
+            current_floor[short_name] = pred.get("level")
         radar[short_name] = score
+
+    # v2.2.2 (F2): 응답용 radar 는 임상 안전망 등급을 반영(대시보드와 동일 형상).
+    #   내부 시뮬레이션 계산(baseline_severity / worsen / improve)은 raw radar 를 그대로 사용.
+    # v2.2.2 (codex R3 blocker): 숫자만 보내면 프론트가 30/60 fallback 으로 재분류해
+    #   모델 threshold(예: retina 19.49) 기준 중위험을 저위험으로 과소표시함 → {score,display_score,level}
+    #   객체로 보내 RadarChart 가 backend level 을 그대로 쓰게 한다.
+    radar_display = {}
+    for short_key, raw_score in radar.items():
+        disp_level = _max_level(_level(raw_score, short_key, age), current_floor.get(short_key))
+        radar_display[short_key] = {
+            "score": raw_score,
+            "display_score": _score_for_level(raw_score, disp_level, short_key, age),
+            "level": disp_level,
+        }
 
     # ── v2.1 baseline-aware 시뮬레이션 ──
     # 환자의 현 합병증 평균 점수 + 슬라이더 변화량(악화/개선 방향) 두 축으로
@@ -321,7 +382,14 @@ def scenario_simulate(body: ScenarioRequest, db: Session = Depends(get_db)):
             neglect_complications[short] = {"level": "분석 진행 중", "score": None}
         else:
             worsened = _worsen(radar[short], baseline_sev, drift_worse)
-            neglect_complications[short] = {"level": _level(worsened, short, age), "score": worsened}
+            # v2.2.2 (F2): 방치/현재유지는 환자 현재(슬라이더) 수치이므로 대시보드와 동일한
+            #   임상 안전망 등급을 최소 보장한다. 재분류 등급 vs floored level 중 더 위험한 쪽 채택,
+            #   점수도 해당 등급 밴드로 맞춰 배지/바 정합성 유지.
+            level = _max_level(_level(worsened, short, age), current_floor.get(short))
+            neglect_complications[short] = {
+                "level": level,
+                "score": _score_for_level(worsened, level, short, age),
+            }
 
     # 건강수명 감소 — baseline severity + 악화 방향 drift 가 클수록 큼.
     # 저위험 + 슬라이더 그대로 → 1년 미만 (사실상 변화 없음).
@@ -376,14 +444,7 @@ def scenario_simulate(body: ScenarioRequest, db: Session = Depends(get_db)):
     }
 
     # ── 집중관리 시 시나리오 (baseline-aware) ──
-    intensive_complications = {}
-    for short in radar:
-        if short in PENDING_MODELS:
-            intensive_complications[short] = {"level": "분석 진행 중", "score": None}
-        else:
-            improved = _improve(radar[short], baseline_sev, drift_better)
-            intensive_complications[short] = {"level": _level(improved, short, age), "score": improved}
-
+    # v2.2.2 (H5/안전): 개선된 수치를 먼저 산출해 임상 안전망을 재평가한다.
     hba1c_after = max(5.5, body.hba1c - 1.0)
 
     # v2.1.2 — C-peptide 변화는 정상범위(1.0~3.5)를 향해 수렴해야 의학적으로 옳음.
@@ -401,6 +462,31 @@ def scenario_simulate(body: ScenarioRequest, db: Session = Depends(get_db)):
         # 정상범위 → 인슐린 저항성 개선으로 약간 ↓ (단 1.0 보장)
         cpep_after = max(NORMAL_CPEP_LO, body.c_peptide - 0.3)
     cpep_after = round(cpep_after, 2)
+
+    # v2.2.2 (H5/안전): 집중관리도 개선된 수치(hba1c_after·cpep_after)로 임상 안전망 재평가.
+    #   수치가 정상화되면 floor 자동 해제(개선 표시), 아직 위험역(예: hba1c_after≥11/≥9)이면
+    #   등급 유지 → 의학적 과소표시 방지. egfr/혈압 등은 슬라이더로 안 바뀌므로 patient 값 유지.
+    intensive_floor = {
+        name_map[full]: lvl
+        for full, lvl in clinical_floor_levels(
+            # v2.2.2 (codex R2): 안전망이 stale dm_duration/age 를 읽지 않게 현재값 주입.
+            {**pdict, "hba1c": hba1c_after, "c_peptide": cpep_after,
+             "age": age, "dm_duration": _current_dm_dur_calc(pdict)},
+            list(name_map.keys()),
+        ).items()
+    }
+
+    intensive_complications = {}
+    for short in radar:
+        if short in PENDING_MODELS:
+            intensive_complications[short] = {"level": "분석 진행 중", "score": None}
+        else:
+            improved = _improve(radar[short], baseline_sev, drift_better)
+            level = _max_level(_level(improved, short, age), intensive_floor.get(short))
+            intensive_complications[short] = {
+                "level": level,
+                "score": _score_for_level(improved, level, short, age),
+            }
 
     # 건강수명 회복 — 저위험 환자는 작은 회복(이미 건강), 고위험 환자는 큰 회복.
     life_gain = _clamp(baseline_sev * 5.0 + drift_better * 3.0, 1.0, 8.0)
@@ -442,10 +528,12 @@ def scenario_simulate(body: ScenarioRequest, db: Session = Depends(get_db)):
         ],
     }
 
-    # ── 졸업시 시나리오 (v2.1.5 — 표준 졸업값 고정, 슬라이더 영향 없음) ──
+    # ── 졸업시 시나리오 (표준 졸업값 고정, 슬라이더 영향 없음) ──
+    # v2.2.2 (원장 회신): C-peptide 2.0 은 췌장이 혈당 낮추려 과부하인 상태라
+    #   온전한 회복으로 보기 어려움 → 1.3 (정상 회복 기준). HbA1c 5.6% (정상 상한).
     GRADUATION_VALUES = {
-        "hba1c": 5.5,
-        "c_peptide": 2.0,
+        "hba1c": 5.6,
+        "c_peptide": 1.3,
         "fbg": 90.0,
         "sbp": 120.0,
         "dbp": 80.0,
@@ -461,15 +549,18 @@ def scenario_simulate(body: ScenarioRequest, db: Session = Depends(get_db)):
         "dbp": GRADUATION_VALUES["dbp"],
         "bmi": GRADUATION_VALUES["bmi"],
     })
-    grad_pred = predict_with_simulation(
-        grad_patient,
-        GRADUATION_VALUES["c_peptide"],
-        GRADUATION_VALUES["hba1c"],
-    )
+    # v2.2.2 (F3 fbg 버그 수정): predict_with_simulation 은 내부에서 fbg=18×hba1c 로
+    #   덮어써 GRADUATION_VALUES["fbg"]=90 을 무효화한다(5.6×18=100.8). grad_patient 에
+    #   표준 졸업값(hba1c·c_peptide·fbg·sbp·dbp·bmi)이 모두 들어있으므로 predict_all 로
+    #   직접 예측해 표준 fbg=90 을 보존한다. (HOMA 등 파생값은 c_peptide·fbg 로 재계산됨)
+    grad_pred = predict_all(grad_patient)
 
     grad_complications = {}
     for full_name, short_name in name_map.items():
         pred = grad_pred.get(full_name, {})
+        # v2.2.2 (codex R2): 표준 졸업값에도 남는 비가역 안전망(예: eGFR<45 Rule5)을 존중.
+        #   predict_all 이 표준값에 적용한 floored level — 졸업이라고 과소표시하지 않도록.
+        grad_floor_level = pred.get("level")
         score = pred.get("score")
         if score is None:
             score = _pending_reference_score(
@@ -478,16 +569,29 @@ def scenario_simulate(body: ScenarioRequest, db: Session = Depends(get_db)):
                 c_peptide=GRADUATION_VALUES["c_peptide"],
             )
             score = round(_clamp(score * 0.4, 5, 25), 1)
+            grad_floor_level = None
         else:
             score = round(_clamp(score, 1, 99), 1)
+        # v2.2.2 (F1 역전 방지): 졸업(완치 목표)은 집중관리보다 항상 좋아야(낮아야) 한다.
+        # 졸업은 ML 재예측, 집중은 휴리스틱이라 방식이 달라 졸업이 더 나쁘게 나올 수 있음.
+        # → 집중관리 점수의 90% 이하로 clamp 해 "졸업 ≤ 집중 ≤ 방치" 단조성 보장.
+        intensive_info = intensive_complications.get(short_name, {})
+        intensive_score = intensive_info.get("score")
+        if intensive_score is not None:
+            score = round(min(score, intensive_score * 0.9), 1)
+        # 단조성 점수 위에 잔존 안전망 등급을 최소 보장 (eGFR<45 등은 졸업해도 고위험 유지).
+        level = _max_level(_level(score, short_name, age), grad_floor_level)
         grad_complications[short_name] = {
-            "level": _level(score, short_name, age),
-            "score": score,
+            "level": level,
+            "score": _score_for_level(score, level, short_name, age),
         }
 
     # 졸업 수명: age 만 의존하는 표준 졸업값 (슬라이더 영향 차단)
-    grad_life = int(82 - age / 10 + 4)
+    # v2.2.2 (F1): 집중관리보다 항상 길게 (+2 이상) 보장.
+    grad_life = max(int(82 - age / 10 + 4), intensive_life + 2)
+    # v2.2.2 (F1): 졸업 의료비는 집중관리보다 항상 낮게 (완치 목표가 가장 저렴).
     grad_cost = int(_clamp(60 + age * 0.5, 50, 150))
+    grad_cost = min(grad_cost, max(50, cost_after - 5))
 
     delta_life = grad_life - neglect_life
     delta_cost = neglect["annual_cost_man"] - grad_cost
@@ -544,7 +648,8 @@ def scenario_simulate(body: ScenarioRequest, db: Session = Depends(get_db)):
 
     return {
         "data": {
-            "radar": radar,
+            # v2.2.2 (F2): 임상 안전망 반영된 radar_display 응답 (대시보드 등급과 일치)
+            "radar": radar_display,
             "neglect": neglect,
             "intensive": intensive,
             "graduation": graduation,

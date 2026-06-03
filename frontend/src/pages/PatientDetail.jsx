@@ -360,16 +360,35 @@ export default function PatientDetail() {
                     </div>
                   );
                 }
+                const dispScore = pred.display_score ?? pred.score;
+                const levelReason = (pred.clinical_flags || []).find((f) => f?.affects_level)?.message
+                  || (pred.clinical_floor_reasons || [])[0];
                 return (
                   <div key={m.key} className="bg-gray-50 rounded-lg p-3">
                     <div className="flex justify-between items-start mb-2">
                       <span className="text-xs font-medium text-gray-700">{m.name}</span>
-                      <RiskBadge level={pred.level} />
+                      <div className="flex items-center gap-1">
+                        {pred.model_role === 'screening' && (
+                          <span
+                            className="px-1 py-0.5 rounded text-[8px] font-semibold bg-slate-100 text-slate-500 border border-slate-200"
+                            title="\uC800\uC815\uD655\uB3C4 \uC120\uBCC4 \uBAA8\uB378 \u2014 \uCC38\uACE0\uC6A9, \uC784\uC0C1 \uD655\uC778 \uD544\uC694"
+                          >
+                            {'\uC120\uBCC4'}
+                          </span>
+                        )}
+                        <RiskBadge level={pred.level} />
+                      </div>
                     </div>
                     <p className="text-xs text-gray-500 mb-1">
-                      {'\uC704\uD5D8\uC9C0\uC218'} <span className="text-sm font-bold text-gray-800">{pred.score}</span>/100
+                      {'\uC704\uD5D8\uC9C0\uC218'} <span className="text-sm font-bold text-gray-800">{dispScore}</span>/100
                     </p>
-                    <RiskBar score={pred.score} level={pred.level} />
+                    <RiskBar score={dispScore} level={pred.level} />
+                    {levelReason && (
+                      <p className="mt-1.5 text-[10px] text-amber-700 leading-tight">{levelReason}</p>
+                    )}
+                    {pred.model_role === 'screening' && (
+                      <p className="mt-1 text-[10px] text-slate-400 leading-tight">{'\uC120\uBCC4\uC6A9 \u2014 \uC784\uC0C1 \uD655\uC778 \uD544\uC694'}</p>
+                    )}
                   </div>
                 );
               })}
