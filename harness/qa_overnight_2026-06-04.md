@@ -74,3 +74,28 @@
 **미결(검토중)**: M7(정상범위 페이지간 불일치)·M9(Dashboard eGFR)·M10/11(유사사례)·L13(문구) → codex R3 가 push-blocking 여부 판정.
 **열린 UX 질문**: H5 로 집중관리(6개월)도 hba1c_after≥11 환자는 고위험 표시 — 의학적으로 정직하나 "관리해도 고위험" 메시지. codex R3 의견 + 사용자 결정 대상.
 
+### Round 4 (블로커 수정) + PUSH — 2026-06-04 야간
+**codex R3 = NO-GO** (블로커 1): scenario.radar 숫자반환 → 프론트 30/60 fallback 재분류로 모델 threshold 중위험을 저위험 과소표시.
+**수정**: radar_display 를 `{score, display_score, level}` 객체로 반환 → RadarChart 가 backend level 사용. 검증: 박순분 dementia 19.6 → 라다 amber(중위험), 콘솔 0.
+**codex R4 = GO** (codex-e819ff): 블로커 해소·회귀 없음 확인.
+**추가**: L13 문구 정정(C-peptide 1%→HbA1c 1%↓), 버전 2.2.2 bump(package.json·tauri.conf.json·main.py×2).
+
+## 엄격 GATE 결과 (전부 충족 ✅)
+1 F1~F5 ✅(F4 라벨 후속·기록) / 2 의료로직 ✅(codex GO) / 3 교차일관성 ✅ / 4 수치이상 0 ✅ / 5 sweep green ✅ / 6 build+console 0 ✅ / 7 단조성 ✅ / 8 codex High/Crit 0 ✅ / 9 2.2.2 ✅ / 10 회귀 0 ✅.
+
+## PUSH 완료
+- commit **a34f2d6** → origin/main (15파일 +690/-38)
+- CI run **26901426657** in_progress (Windows 빌드) — green 확인 후 tag v2.2.2 로 Release.
+
+### Round 5 (사용자 추가 요청) — 졸업 박스 고정
+- a34f2d6 CI run 26901426657 = **success** (Windows 빌드·6모델 스모크 통과) 확인. (release 태그 전 poller 외부 중지됨)
+- **요청**: 졸업 박스의 예상 건강수명·의료비가 슬라이더(시뮬레이션)에 따라 움직이면 안 됨.
+- **원인**: F1 수정 때 grad_life=max(.., intensive_life+2)/grad_cost=min(.., cost_after-5) 로 슬라이더 의존 도입.
+- **수정**: scenario.py — grad_life=max(62, age+5, int(82−age/10+10)) / grad_cost=clamp(40+age*0.2,40,55).
+  age 만 의존(고정). F1 단조성은 고정 졸업값이 슬라이더 전 구간 집중값을 항상 능가/하회하도록 범위 설계로 보장(clamp 불필요).
+- **검증**: 권선호 슬라이더 4위치(cp0.5~3, a1c6~13.9) 졸업 life=85/cost=52 불변, 집중·방치는 변동. 전 환자 단조성 0위반.
+  UI 시연: HbA1c 13.9→6.0 시 졸업 박스 불변(85세/52만), 집중관리 77→83세 변동. sweep CRIT/HIGH 0.
+
+## 후속(non-blocking, 사용자 결정)
+- F4 위험요인 패널 top_drivers / M7 정상범위 단일모듈 통합 / M9 Dashboard eGFR backend소스 / M10·11 유사사례 더미 절감액 정직화 / H5 집중관리 hba1c 강하폭(-1.0) 재검토.
+

@@ -586,12 +586,15 @@ def scenario_simulate(body: ScenarioRequest, db: Session = Depends(get_db)):
             "score": _score_for_level(score, level, short_name, age),
         }
 
-    # 졸업 수명: age 만 의존하는 표준 졸업값 (슬라이더 영향 차단)
-    # v2.2.2 (F1): 집중관리보다 항상 길게 (+2 이상) 보장.
-    grad_life = max(int(82 - age / 10 + 4), intensive_life + 2)
-    # v2.2.2 (F1): 졸업 의료비는 집중관리보다 항상 낮게 (완치 목표가 가장 저렴).
-    grad_cost = int(_clamp(60 + age * 0.5, 50, 150))
-    grad_cost = min(grad_cost, max(50, cost_after - 5))
+    # 졸업 수명/의료비: 표준 졸업값(완전 회복) 기준 — 슬라이더(시뮬레이션) 영향 완전 차단.
+    # v2.2.2 (사용자 요청): 졸업 박스의 예상 건강수명·의료비는 슬라이더로 움직이면 안 됨.
+    #   → age 만 의존하는 고정값으로 산출. 이전엔 F1 단조성을 intensive_life/cost_after 에
+    #     clamp 해서 슬라이더에 따라 졸업값이 움직였음.
+    # F1 단조성(졸업 ≤ 집중 ≤ 방치)은 '고정 졸업값이 슬라이더 전 구간의 집중값을 항상 능가/하회'
+    #   하도록 범위를 잡아 보장한다 (집중 수명 ≤ 82−age/10+8 < grad_life,
+    #   집중 의료비 ≥ 60(cost_after 하한) > grad_cost). 따라서 clamp 없이도 역전 불가.
+    grad_life = max(62, age + 5, int(82 - age / 10 + 10))
+    grad_cost = int(_clamp(40 + age * 0.2, 40, 55))
 
     delta_life = grad_life - neglect_life
     delta_cost = neglect["annual_cost_man"] - grad_cost

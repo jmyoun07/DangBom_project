@@ -109,7 +109,9 @@ def main():
             continue
 
         for k, v in r["radar"].items():
-            if v is None or not (0 <= v <= 100):
+            # v2.2.2: radar 는 {score, display_score, level} 객체 (구버전 숫자도 호환)
+            sc = v.get("display_score", v.get("score")) if isinstance(v, dict) else v
+            if sc is None or not (0 <= sc <= 100):
                 add("CRIT", "radar_range", pname, f"{k}={v}")
 
         neg, inten, grad = r["neglect"], r["intensive"], r["graduation"]
