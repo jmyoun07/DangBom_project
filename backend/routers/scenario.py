@@ -47,6 +47,11 @@ def _clamp(v, lo, hi):
     return max(lo, min(hi, v))
 
 
+def _pf(v, default):
+    """pdict 값 안전 float (None/비숫자 → default)."""
+    return v if isinstance(v, (int, float)) else default
+
+
 def _stable_offset(seed_key: str, lo: float, hi: float) -> float:
     """환자+질환 조합별 고정 오프셋. 슬라이더가 움직여도 변하지 않음."""
     h = int(hashlib.md5(seed_key.encode()).hexdigest()[:8], 16)
@@ -375,6 +380,32 @@ def scenario_simulate(body: ScenarioRequest, db: Session = Depends(get_db)):
     # "방치" 대신 "현재 수치 유지" 라벨 사용. _classify_risk 와 동일 컷오프로 정합성 유지.
     neglect_label_mode = "maintain" if (mean_score < 30 and not slider_changed) else "neglect"
 
+    # ── 졸업(완전 회복) 고정 anchor + 집중관리 졸업 수렴 계수 ──
+    # v2.2.2 (사용자 요청): 졸업 박스의 예상 건강수명·의료비는 슬라이더 영향 없이 고정.
+    #   동시에, 슬라이더(혈당)+환자의 비정상 동반수치가 졸업 이상치에 가까울수록(conv→1)
+    #   '집중관리 시' 수명·의료비도 졸업값에 수렴한다. 다른 수치가 졸업 기준과 다르면 격차 유지.
+    GRADUATION_VALUES = {
+        "hba1c": 5.6, "c_peptide": 1.3, "fbg": 90.0,
+        "sbp": 120.0, "dbp": 80.0, "bmi": 22.0,
+    }
+    grad_life = max(62, age + 5, int(82 - age / 10 + 10))   # 고정 최선 (age 만 의존)
+    grad_cost = int(_clamp(40 + age * 0.2, 40, 55))         # 고정 최저 (age 만 의존)
+
+    # 졸업 이상치 대비 이탈도 — 혈당(슬라이더)이 주요인, 동반수치는 '비정상 구간'만 가산.
+    _sbp = _pf(pdict.get("sbp"), 120.0)
+    _dbp = _pf(pdict.get("dbp"), 80.0)
+    _bmi = _pf(pdict.get("bmi"), 22.0)
+    managed_gap = (
+        abs(body.hba1c - GRADUATION_VALUES["hba1c"]) * 0.7
+        + abs(body.c_peptide - GRADUATION_VALUES["c_peptide"]) * 0.4
+        + max(0.0, _sbp - 130.0) * 0.04       # 수축기 130 초과분만 (정상 여유 확보)
+        + max(0.0, _dbp - 85.0) * 0.04        # 이완기 85 초과분만
+        + max(0.0, _bmi - 25.0) * 0.06        # 비만(>25)만
+        + max(0.0, 18.5 - _bmi) * 0.04        # 저체중(<18.5)만
+    )
+    # gap 0 → conv 1 (집중관리가 졸업에 완전 수렴), gap ≥ 2 → conv 0 (기존 휴리스틱)
+    grad_conv = _clamp(1.0 - managed_gap / 2.0, 0.0, 1.0)
+
     # ── 방치/현재유지 시 시나리오 ──
     neglect_complications = {}
     for short in radar:
@@ -491,11 +522,17 @@ def scenario_simulate(body: ScenarioRequest, db: Session = Depends(get_db)):
     # 건강수명 회복 — 저위험 환자는 작은 회복(이미 건강), 고위험 환자는 큰 회복.
     life_gain = _clamp(baseline_sev * 5.0 + drift_better * 3.0, 1.0, 8.0)
     cost_after = int(_clamp(cost_base * 0.4, 60, 400))
+    # v2.2.2 (졸업 수렴): 프로필이 졸업 이상치에 가까울수록(grad_conv→1) 졸업 의료비로 당김.
+    #   grad_cost ≤ cost_after 이므로 의료비는 내려가고, 항상 grad_cost ≤ 집중 ≤ 방치 유지.
+    cost_after = int(round(cost_after + (grad_cost - cost_after) * grad_conv))
     cost_decrease_pct = int(_clamp(20 + baseline_sev * 25 + drift_better * 10, 15, 55))
 
     # 집중관리 건강수명 — age + 3 이상, 방치보다 +2 이상.
     intensive_life_raw = int(82 - (age / 10) + life_gain)
     intensive_life = max(60, age + 3, neglect_life + 2, intensive_life_raw)
+    # v2.2.2 (졸업 수렴): 프로필이 졸업 이상치에 가까울수록(grad_conv→1) 졸업 수명으로 당김.
+    #   grad_life ≥ intensive 이므로 수명은 올라가고, 항상 방치 ≤ 집중 ≤ grad_life 유지.
+    intensive_life = int(round(intensive_life + (grad_life - intensive_life) * grad_conv))
 
     # ── 집중관리 시 회복 메시지 (방치 측 전조증상에 1:1 대응) ──
     # 방치 박스에 노출된 각 질환의 worsened 등급을 기준으로 "어떻게 해결되는지" 한 줄.
@@ -529,17 +566,8 @@ def scenario_simulate(body: ScenarioRequest, db: Session = Depends(get_db)):
     }
 
     # ── 졸업시 시나리오 (표준 졸업값 고정, 슬라이더 영향 없음) ──
-    # v2.2.2 (원장 회신): C-peptide 2.0 은 췌장이 혈당 낮추려 과부하인 상태라
-    #   온전한 회복으로 보기 어려움 → 1.3 (정상 회복 기준). HbA1c 5.6% (정상 상한).
-    GRADUATION_VALUES = {
-        "hba1c": 5.6,
-        "c_peptide": 1.3,
-        "fbg": 90.0,
-        "sbp": 120.0,
-        "dbp": 80.0,
-        "bmi": 22.0,
-    }
-
+    # GRADUATION_VALUES / grad_life / grad_cost 는 위 '졸업 anchor' 블록에서 이미 정의됨.
+    #   (원장 회신: C-peptide 1.3 = 정상 회복 기준, HbA1c 5.6% = 정상 상한)
     grad_patient = dict(pdict)
     grad_patient.update({
         "hba1c": GRADUATION_VALUES["hba1c"],
@@ -586,16 +614,7 @@ def scenario_simulate(body: ScenarioRequest, db: Session = Depends(get_db)):
             "score": _score_for_level(score, level, short_name, age),
         }
 
-    # 졸업 수명/의료비: 표준 졸업값(완전 회복) 기준 — 슬라이더(시뮬레이션) 영향 완전 차단.
-    # v2.2.2 (사용자 요청): 졸업 박스의 예상 건강수명·의료비는 슬라이더로 움직이면 안 됨.
-    #   → age 만 의존하는 고정값으로 산출. 이전엔 F1 단조성을 intensive_life/cost_after 에
-    #     clamp 해서 슬라이더에 따라 졸업값이 움직였음.
-    # F1 단조성(졸업 ≤ 집중 ≤ 방치)은 '고정 졸업값이 슬라이더 전 구간의 집중값을 항상 능가/하회'
-    #   하도록 범위를 잡아 보장한다 (집중 수명 ≤ 82−age/10+8 < grad_life,
-    #   집중 의료비 ≥ 60(cost_after 하한) > grad_cost). 따라서 clamp 없이도 역전 불가.
-    grad_life = max(62, age + 5, int(82 - age / 10 + 10))
-    grad_cost = int(_clamp(40 + age * 0.2, 40, 55))
-
+    # grad_life / grad_cost 는 위 '졸업 anchor' 블록에서 고정값으로 이미 산출됨(슬라이더 무관).
     delta_life = grad_life - neglect_life
     delta_cost = neglect["annual_cost_man"] - grad_cost
     delta_complications = {}
