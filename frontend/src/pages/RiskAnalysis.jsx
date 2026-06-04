@@ -509,10 +509,11 @@ export default function RiskAnalysis() {
                 const { level, score, pending } = normalizeComplication(raw);
                 const foldData = scenario?.fold_change_by_disease?.[k];
                 return (
-                  <div key={k}>
+                  // v2.2.2: 부가텍스트 유무와 무관하게 행 높이 통일 (3개 카드 열 정렬)
+                  <div key={k} className="min-h-[40px]">
                     <RiskRow label={riskLabels[k] || k} level={level} score={score} pending={pending} />
                     {foldData?.fold != null && (
-                      <p className="text-[10px] text-gray-500 ml-4 -mt-0.5">
+                      <p className="text-[10px] text-gray-500 ml-4 -mt-0.5 leading-tight">
                         같은 나이대 대비 {Number(foldData.fold).toFixed(2)}배
                       </p>
                     )}
@@ -568,7 +569,10 @@ export default function RiskAnalysis() {
               {Object.entries(intensiveComps).map(([k, raw]) => {
                 const { level, score, pending } = normalizeComplication(raw);
                 return (
-                  <RiskRow key={k} label={riskLabels[k] || k} level={level} score={score} pending={pending} />
+                  // v2.2.2: 방치/졸업 카드와 행 높이 통일 (열 정렬)
+                  <div key={k} className="min-h-[40px]">
+                    <RiskRow label={riskLabels[k] || k} level={level} score={score} pending={pending} />
+                  </div>
                 );
               })}
             </div>
@@ -667,10 +671,11 @@ export default function RiskAnalysis() {
                 const { level, score, pending } = normalizeComplication(raw);
                 const delta = scenario.graduation.delta_vs_neglect?.complications?.[k];
                 return (
-                  <div key={k}>
+                  // v2.2.2: 방치/집중 카드와 행 높이 통일 (열 정렬)
+                  <div key={k} className="min-h-[40px]">
                     <RiskRow label={riskLabels[k] || k} level={level} score={score} pending={pending} />
                     {delta != null && delta > 0 && (
-                      <p className="text-[10px] text-purple-600 ml-4 -mt-0.5 font-semibold">
+                      <p className="text-[10px] text-purple-600 ml-4 -mt-0.5 font-semibold leading-tight">
                         방치 대비 {delta.toFixed(1)}점 감소
                       </p>
                     )}
