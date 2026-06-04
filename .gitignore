@@ -30,6 +30,8 @@ catboost_info/
 # ───────── Runtime DB (PHI 가능성) ─────────
 backend/dbcare.db
 backend/dbcare.db-journal
+backend/dbcare.db.premigrate.bak
+*.premigrate.bak
 *.sqlite
 *.sqlite3
 
