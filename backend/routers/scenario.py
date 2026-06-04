@@ -81,15 +81,18 @@ def _score_for_level(score, level, disease_key, age):
 
     classify_disease_risk 와 동일 경계를 사용해 배지(level)와 진행 바(score)가
     어긋나지 않게 한다. 임상 안전망으로 등급이 승격됐는데 raw 점수가 낮으면
-    "고위험인데 바는 짧다" 는 모순이 생기므로, 점수도 해당 밴드 하한까지 올린다.
-      - 고위험: score ≥ max(60, threshold)
-      - 중위험: threshold ≤ score < 60
+    "고위험인데 바는 짧다" 는 모순이 생기므로, 점수도 해당 밴드로 올린다.
+
+    v2.2.2 (이질감 개선): 6개가 모두 고위험으로 고정될 때 raw 가 전부 60 미만이면 바가 다
+    60 으로 똑같아진다. 고위험 밴드 안에서 raw 점수를 비례 반영(base + score×0.4)해 ML 상대
+    위험 차이를 살린다 (모두 60 이상 = 고위험 유지). predictor._floor_band_score 와 동일 식.
+      - 고위험: display = max(score, base + score×0.4)  (base = max(60, threshold)), 99 상한
+      - 중위험: threshold ≤ display < 60
       - 저위험: 변경 없음
-    이미 목표 등급 밴드에 있으면 no-op(원점수 유지).
     """
     if level == "고위험":
-        th = get_disease_threshold(disease_key, age=age) or 60.0
-        return round(_clamp(max(score, 60.0, th), 1, 99), 1)
+        base = max(60.0, get_disease_threshold(disease_key, age=age) or 60.0)
+        return round(_clamp(max(score, base + score * 0.4), 1, 99), 1)
     if level == "중위험":
         th = get_disease_threshold(disease_key, age=age) or 30.0
         return round(_clamp(min(max(score, th), 59.9), 1, 99), 1)

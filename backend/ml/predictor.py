@@ -829,17 +829,21 @@ def _floor_band_score(score, level, model_name, age=None):
     """진행바/게이지용 display 점수를 등급(level) 밴드 하한까지 올린다 (강등 없음).
 
     임상 안전망으로 level 만 승격되고 raw score 는 낮을 때(예: HbA1c≥11 로 고위험인데
-    ML score 1.0) "고위험 배지 + 1/100 바" 모순을 막는다. _classify_risk 와 동일 경계:
-      - 고위험: score ≥ max(60, threshold)
-      - 중위험: threshold ≤ score < 60
-    이미 밴드 안이면 no-op. raw_score(score)는 건드리지 않고 별도 display_score 로만 쓴다.
+    ML score 1.0) "고위험 배지 + 1/100 바" 모순을 막는다.
+
+    v2.2.2 (이질감 개선): 안전망으로 6개가 모두 고위험으로 고정될 때 raw score 가 전부 60 미만이면
+    바가 전부 60 으로 납작해져 똑같아 보였다. 이제 고위험 밴드 안에서 **raw 점수를 비례 반영**해
+    ML 의 상대 위험 차이를 살린다 (모두 60 이상 = 고위험 zone 유지, 강등 없음).
+      - 고위험: display = max(score, base + score×0.4)  (base = max(60, threshold)), 99 상한
+      - 중위험: threshold ≤ display < 60
+    raw_score(score)는 건드리지 않고 별도 display_score 로만 쓴다.
     """
     if score is None or level not in ("중위험", "고위험"):
         return round(score, 1) if score is not None else score
     th = get_disease_threshold(model_name, age=age)
     if level == "고위험":
-        lo = max(60.0, th or 60.0)
-        return round(min(max(score, lo), 99.0), 1)
+        base = max(60.0, th or 60.0)
+        return round(min(max(score, base + score * 0.4), 99.0), 1)
     lo = th or MID_RISK_FALLBACK
     return round(min(max(score, lo), 59.9), 1)
 
