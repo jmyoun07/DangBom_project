@@ -17,3 +17,5 @@ catboost==1.2.10
 
 # 엑셀(.xlsx) 업로드 파싱 (v2.2.1)
 openpyxl==3.1.5
+# v2.2.2: 비표준 xlsx(openpyxl 스타일 파싱 실패) 대응 — 병원 export 파일 읽기용
+python-calamine==0.6.2

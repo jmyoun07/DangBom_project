@@ -36,6 +36,7 @@ hiddenimports = [
 for pkg in [
     'sklearn', 'xgboost', 'lightgbm', 'catboost',
     'imblearn', 'pandas', 'openpyxl', 'et_xmlfile', 'numpy', 'joblib', 'scipy',
+    'python_calamine',  # v2.2.2: 비표준 xlsx(openpyxl 실패) 읽기용 — 병원 export 대응
     'threadpoolctl', 'fastapi', 'starlette', 'pydantic', 'pydantic_core',
     'sqlalchemy', 'uvicorn', 'anyio', 'sniffio', 'h11', 'click',
     'typing_extensions', 'annotated_types', 'idna', 'certifi',

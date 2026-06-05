@@ -187,6 +187,24 @@ def _lookup_db_field(csv_col):
     return CSV_COLUMN_MAP.get(csv_col) or _NORM_COLUMN_MAP.get(str(csv_col).replace(" ", "").lower())
 
 
+def _read_excel_robust(content: bytes, string_dtypes: dict):
+    """비표준 xlsx 대응 엑셀 리더.
+
+    일부 병원/외부 프로그램이 만든 xlsx 는 styles.xml 에 name 없는 cellStyle 이 있어
+    openpyxl 이 'apply_stylesheet' 에서 죽는다. calamine(Rust 기반)은 이런 파일도 읽으므로
+    calamine 우선 시도 → 실패/미설치 시 openpyxl fallback. 둘 다 실패하면 예외.
+    """
+    last_err = None
+    for engine in ("calamine", "openpyxl"):
+        try:
+            return pd.read_excel(io.BytesIO(content), engine=engine, sheet_name=0, dtype=string_dtypes)
+        except ImportError as e:
+            last_err = e  # 엔진 미설치 → 다음 엔진
+        except Exception as e:
+            last_err = e  # 파싱 실패 → 다음 엔진
+    raise last_err or RuntimeError("엑셀 파서 없음")
+
+
 def _is_blank_cell(value) -> bool:
     """None / NaN / NaT / pd.NA 등 결측 셀을 통일 판정.
     v2.1.12 (엑셀 지원): string dtype 컬럼의 결측은 pd.NA(=float 아님)라
@@ -357,14 +375,25 @@ async def upload_csv(
         "phone": "string", "연락처": "string", "전화번호": "string",
         "sex": "string", "성별": "string",
     }
-    file_label = "CSV" if is_csv else "엑셀"
+    # v2.2.2: 내용 기반 판별 — xlsx(zip)는 'PK' 매직으로 시작. 확장자가 .csv 여도
+    #   실제 내용이 엑셀이면 엑셀로 파싱한다 (병원 export 가 xlsx 를 .csv 로 저장한 경우 대응).
+    looks_xlsx = content[:2] == b"PK"
+    use_excel = is_xlsx or looks_xlsx
+    file_label = "엑셀" if use_excel else "CSV"
     try:
-        if is_csv:
-            df = pd.read_csv(io.BytesIO(content), dtype=string_dtypes)
+        if use_excel:
+            df = _read_excel_robust(content, string_dtypes)
         else:
-            df = pd.read_excel(io.BytesIO(content), engine="openpyxl", sheet_name=0, dtype=string_dtypes)
+            df = pd.read_csv(io.BytesIO(content), dtype=string_dtypes)
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"{file_label} 파싱 실패: {str(e)}")
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"{file_label} 파일을 읽지 못했습니다. 파일이 손상됐거나 비표준 형식일 수 있습니다. "
+                f"Excel에서 다시 저장(CSV UTF-8 또는 .xlsx)한 뒤 업로드해 주세요. "
+                f"(원인: {type(e).__name__})"
+            ),
+        )
     MAX_ROWS = 10000
     if len(df) > MAX_ROWS:
         raise HTTPException(status_code=413, detail=f"행이 너무 많습니다 (최대 {MAX_ROWS}행).")
