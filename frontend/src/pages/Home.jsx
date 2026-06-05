@@ -112,19 +112,22 @@ export default function Home() {
     setFeedback({ errors: [], warnings: [], successes: [] });
     setStatusMessage(`\uD30C\uC77C \uC120\uD0DD\uB428: ${f.name} (${(f.size / 1024).toFixed(1)} KB)`);
     // v2.2.1: \uC5D1\uC140(.xlsx)\uC740 \uBC14\uC774\uB108\uB9AC\uB77C \uBE0C\uB77C\uC6B0\uC800 \uBBF8\uB9AC\uBCF4\uAE30 \uBD88\uAC00 \u2192 \uC2A4\uD0B5, \uC11C\uBC84 \uB9E4\uD551\uC774 \uAD8C\uC704.
-    if (isXlsxFile(f)) {
-      setMapping([]);
-      return;
-    }
-    // Preview first line columns (CSV)
+    // v2.2.2: 확장자가 .csv 라도 내용이 엑셀(PK/zip)이면 텍스트 미리보기가 깨지므로 내용으로 판별.
     const reader = new FileReader();
     reader.onload = (e) => {
-      const firstLine = String(e.target.result).split('\n')[0] || '';
+      const buf = new Uint8Array(e.target.result || new ArrayBuffer(0));
+      const isZipXlsx = buf.length >= 2 && buf[0] === 0x50 && buf[1] === 0x4B; // 'PK' = xlsx/zip
+      if (isXlsxFile(f) || isZipXlsx) {
+        // 엑셀(.xlsx 또는 .csv 로 위장한 엑셀) → 브라우저 미리보기 불가, 서버가 매핑.
+        setMapping([]);
+        return;
+      }
+      const firstLine = new TextDecoder('utf-8').decode(buf).split('\n')[0] || '';
       const cols = firstLine.replace(/\r/g, '').replace(/^\uFEFF/, '').split(',').map((s) => s.trim()).filter(Boolean);
       setMapping(cols.map((c) => ({ csv_column: c, db_field: null, status: 'pending', kind: null })));
       setStatusMessage(`\uD30C\uC77C \uC900\uBE44 \uC644\uB8CC. ${cols.length}\uAC1C \uCEEC\uB7FC \uAC10\uC9C0\uB428.`);
     };
-    reader.readAsText(f.slice(0, 4096));
+    reader.readAsArrayBuffer(f.slice(0, 4096));
   };
 
   const onDrop = (e) => {
