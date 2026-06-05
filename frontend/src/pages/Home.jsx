@@ -29,6 +29,24 @@ function validateCsvFile(f) {
   return null;
 }
 
+// v2.2.2 fix: \uC5D1\uC140 \uC5EC\uBD80 \uD310\uBCC4 \uD5EC\uD37C. (v2.2.1 \uC5D1\uC140 \uC9C0\uC6D0 \uCD94\uAC00 \uC2DC \uD638\uCD9C\uB9CC \uD558\uACE0 \uC815\uC758\uAC00 \uBE60\uC838
+//   handleFile \uC774 ReferenceError \uB85C \uC8FD\uC5B4 '\uD30C\uC77C\uC774 \uC548 \uB4E4\uC5B4\uAC00\uB294' \uBC84\uADF8\uAC00 \uC788\uC5C8\uC74C)
+function isXlsxFile(f) {
+  return !!f && f.name.toLowerCase().endsWith('.xlsx');
+}
+
+// \uC5D0\uB7EC(\uBB38\uC790\uC5F4/Error/\uAC1D\uCCB4/\uBC30\uC5F4/FastAPI detail)\uB97C \uD56D\uC0C1 \uC77D\uC744 \uC218 \uC788\uB294 \uBB38\uC790\uC5F4\uB85C \uBCC0\uD658.
+//   "[object Object]" \uB85C \uD45C\uC2DC\uB418\uB358 \uBB38\uC81C \uBC29\uC9C0.
+function errToText(e) {
+  if (e == null) return '\uC54C \uC218 \uC5C6\uB294 \uC624\uB958';
+  if (typeof e === 'string') return e;
+  if (Array.isArray(e)) return e.map(errToText).filter(Boolean).join(', ');
+  if (typeof e === 'object') {
+    return e.msg || e.message || e.detail || e.reason || e.error || JSON.stringify(e);
+  }
+  return String(e);
+}
+
 export default function Home() {
   const [mode, setMode] = useState('csv'); // 'csv' | 'manual'
   const [file, setFile] = useState(null);
@@ -219,9 +237,10 @@ export default function Home() {
         setStatusMessage(msg);
       }
     } catch (err) {
-      const detail = err.response?.data?.detail || err.message;
-      setFeedback({ errors: [String(detail)], warnings: [], successes: [] });
-      toast.error(String(detail), { title: '업로드 오류' });
+      // FastAPI 422 는 detail 이 객체/배열이라 String() 하면 "[object Object]" → errToText 로 변환
+      const detail = errToText(err.response?.data?.detail ?? err.message ?? err);
+      setFeedback({ errors: [detail], warnings: [], successes: [] });
+      toast.error(detail, { title: '업로드 오류' });
       setStatusMessage(`\uC5C5\uB85C\uB4DC \uC624\uB958: ${detail}`);
       prodSafeError('Home.upload')(err);
     } finally {
@@ -443,7 +462,7 @@ export default function Home() {
                   </p>
                   <ul className="space-y-1">
                     {feedback.errors.map((e, i) => (
-                      <li key={i} className="text-[11px] text-red-600 bg-red-50 rounded p-2">{e}</li>
+                      <li key={i} className="text-[11px] text-red-600 bg-red-50 rounded p-2">{errToText(e)}</li>
                     ))}
                   </ul>
                 </div>

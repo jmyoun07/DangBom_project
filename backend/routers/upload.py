@@ -160,7 +160,31 @@ CSV_COLUMN_MAP = {
     # 기타 (참고용)
     "visceral_fat": "visceral_fat",
     "내장지방": "visceral_fat",
+
+    # ── v2.2.2: 병원 양식 흔한 헤더 변형 추가 ──
+    # (성별/HbA1c/AST/ALT/혈압 띄어쓰기/LDL·HDL 풀네임 등 — 실제 병원 CSV 헤더)
+    "성별": "sex",
+    "HbA1c": "hba1c",
+    "hba1c": "hba1c",
+    "당화혈색소(HbA1c)": "hba1c",
+    "AST": "ast",
+    "ALT": "alt",
+    "수축기 혈압": "sbp",
+    "이완기 혈압": "dbp",
+    "LDL 콜레스테롤": "ldl",
+    "LDL콜레스테롤": "ldl",
+    "HDL 콜레스테롤": "hdl",
+    "HDL콜레스테롤": "hdl",
+    "총 콜레스테롤": "total_cholesterol",
 }
+
+# v2.2.2: 공백/대소문자 차이를 흡수하는 정규화 매핑 (예: "수축기 혈압" ↔ "수축기혈압", "HBA1C" ↔ "hba1c")
+_NORM_COLUMN_MAP = {str(k).replace(" ", "").lower(): v for k, v in CSV_COLUMN_MAP.items()}
+
+
+def _lookup_db_field(csv_col):
+    """원본 헤더 → DB 필드. 정확 매칭 우선, 없으면 공백·대소문자 무시 정규화 매칭."""
+    return CSV_COLUMN_MAP.get(csv_col) or _NORM_COLUMN_MAP.get(str(csv_col).replace(" ", "").lower())
 
 
 def _is_blank_cell(value) -> bool:
@@ -353,7 +377,7 @@ async def upload_csv(
     column_lookup = {}  # CSV 에 실제로 존재하는 매핑 컬럼만
 
     for csv_col in df.columns:
-        db_field = CSV_COLUMN_MAP.get(csv_col)
+        db_field = _lookup_db_field(csv_col)  # v2.2.2: 공백·대소문자 무시 매칭 포함
         if db_field:
             kind = "메타" if db_field in META_FIELDS else "변수"
             mapping_preview.append({
@@ -374,20 +398,17 @@ async def upload_csv(
             warnings.append(f"'{csv_col}' 컬럼은 매핑되지 않았습니다.")
 
     # ── 2) 필수 컬럼 체크 ────────────────────────────────
-    # age 는 dob + exam_date 로 자동 계산되므로 필수 아님 — dob 또는 age 중 하나만 있으면 OK
-    required = ["sex", "HE_glu", "HE_HbA1c"]
-    alt_names = {
-        "sex": ["성별"],
-        "HE_glu": ["fbg", "공복혈당"],
-        "HE_HbA1c": ["hba1c", "당화혈색소"],
-    }
-    for req in required:
-        if req not in df.columns and not any(a in df.columns for a in alt_names.get(req, [])):
-            errors.append(f"필수 컬럼 '{req}' 누락")
+    # v2.2.2: 원본 헤더가 아니라 '매핑된 DB 필드' 기준으로 체크 → 헤더 변형(HbA1c/성별/띄어쓰기)도
+    #   매핑만 되면 통과. (이전엔 raw 헤더 비교라 "HbA1c"(↔hba1c 대소문자)가 누락 판정됨)
+    mapped_fields = set(column_lookup.values())
+    required_fields = {"sex": "성별", "fbg": "공복혈당", "hba1c": "당화혈색소(HbA1c)"}
+    for dbf, label in required_fields.items():
+        if dbf not in mapped_fields:
+            errors.append(f"필수 컬럼 누락: {label}")
 
-    # age 없으면 dob 가 있어야 함
-    has_age = "age" in df.columns or "나이" in df.columns
-    has_dob = "dob" in df.columns or "생년월일" in df.columns
+    # age 없으면 dob 가 있어야 함 (둘 다 매핑 필드 기준)
+    has_age = "age" in mapped_fields
+    has_dob = "dob" in mapped_fields
     if not has_age and not has_dob:
         errors.append("필수 컬럼 'age' 또는 'dob' 중 하나는 있어야 합니다")
 
