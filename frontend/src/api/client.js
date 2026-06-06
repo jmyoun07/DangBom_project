@@ -23,7 +23,11 @@ api.interceptors.request.use((config) => {
       config.headers.delete('Content-Type');           // AxiosHeaders 정규화 키까지 제거
     } else {
       delete config.headers['Content-Type'];
-      if (config.headers.common) delete config.headers.common['Content-Type'];
+      delete config.headers['content-type'];
+      if (config.headers.common) {
+        delete config.headers.common['Content-Type'];
+        delete config.headers.common['content-type'];
+      }
     }
   }
   const token = (typeof window !== 'undefined' && window.__DBCARE_TOKEN__)
