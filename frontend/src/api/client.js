@@ -14,6 +14,18 @@ const api = axios.create({
 });
 
 api.interceptors.request.use((config) => {
+  // 파일 업로드(FormData)는 Content-Type 을 지워 axios/브라우저가 multipart boundary 를 자동 설정하게 한다.
+  //   인스턴스 기본값 'application/json' 이 남으면 axios transformRequest 가 FormData 를
+  //   JSON({"file":{}}) 으로 직렬화해버려 서버가 file 필드를 못 받고 422 "Field required" 가 난다.
+  //   (CSV/엑셀 업로드가 안 되던 근본 원인. node 재현으로 검증함.)
+  if (typeof FormData !== 'undefined' && config.data instanceof FormData && config.headers) {
+    if (typeof config.headers.delete === 'function') {
+      config.headers.delete('Content-Type');           // AxiosHeaders 정규화 키까지 제거
+    } else {
+      delete config.headers['Content-Type'];
+      if (config.headers.common) delete config.headers.common['Content-Type'];
+    }
+  }
   const token = (typeof window !== 'undefined' && window.__DBCARE_TOKEN__)
     || import.meta.env.VITE_DBCARE_API_TOKEN;
   if (token) {
