@@ -28,7 +28,7 @@ import pandas as pd
 
 from models.database import get_db, Patient, MeasurementHistory
 from routers.patients import _backfill_risk_levels_bg
-from services.derived import compute_derived
+from services.derived import compute_derived, normalize_sex
 
 
 def _append_measurement(db: Session, patient_id: int, pdata: dict) -> None:
@@ -410,12 +410,11 @@ def _row_to_patient_data(row, idx: int, column_lookup: dict) -> dict:
     if "exam_date" not in patient_data:
         patient_data["exam_date"] = date.today()
 
-    # sex 코드 변환 (1=남, 2=여)
-    sex_val = patient_data.get("sex")
-    if sex_val in [1, 1.0, "1"]:
-        patient_data["sex"] = "M"
-    elif sex_val in [2, 2.0, "2"]:
-        patient_data["sex"] = "F"
+    # sex 정규화 (단일 소스 normalize_sex): 1/2 · M/F · 남/여 · male/female 모두 처리.
+    #   v2.2.6 (감사 H1): 인식 불가/결측이면 None 으로 두어 eGFR·모델이 임의 여성값을
+    #   쓰지 않게 한다. (기존: 1/2 만 변환 → '남'/'male' 등이 그대로 남아 전원 여성 처리)
+    if "sex" in patient_data:
+        patient_data["sex"] = normalize_sex(patient_data.get("sex"))
 
     # ── 파생 지표 일괄 계산 (services/derived.py 의 단일 소스) ──
     # age (DOB→자동), BMI, LDL(병원 실측 우선), LDL_calc, non_HDL,

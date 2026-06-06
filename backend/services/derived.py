@@ -96,16 +96,34 @@ def current_dm_duration(data: dict, on: date | None = None) -> int | None:
     return int(fd) if fd is not None else None
 
 
+def normalize_sex(v) -> str | None:
+    """성별 표기를 'M'/'F' 로 단일 정규화. 인식 불가/결측은 None.
+
+    업로드(CSV/엑셀)·수기 POST·모델 입력·eGFR 계산이 모두 이 함수를 공유해
+    '남'/'여'/'male'/'M'/'1' 등 다양한 병원 표기를 일관 처리하고,
+    인식 불가/결측 값을 임의로 여성으로 처리하지 않는다(임상값 왜곡 방지).
+    """
+    if v is None:
+        return None
+    s = str(v).strip().upper()
+    if s in ("M", "MALE", "남", "남자", "1", "1.0"):
+        return "M"
+    if s in ("F", "FEMALE", "여", "여자", "2", "2.0"):
+        return "F"
+    return None
+
+
 def _ckd_epi_egfr(cr: float, age: float, sex: str) -> float | None:
     """
-    CKD-EPI 2009 공식. sex: 'M' / 'F' (대소문자 무관).
-    반환: eGFR (mL/min/1.73m²), 계산 불가 시 None.
+    CKD-EPI 2009 공식. sex 는 normalize_sex 로 'M'/'F' 정규화 후 사용.
+    반환: eGFR (mL/min/1.73m²), 계산 불가(성별 불명 포함) 시 None.
     """
-    if cr is None or age is None or not sex:
+    nsex = normalize_sex(sex)
+    if cr is None or age is None or nsex is None:
         return None
     if cr <= 0 or age <= 0:
         return None
-    is_male = str(sex).upper().startswith("M")
+    is_male = nsex == "M"
     kappa = 0.9 if is_male else 0.7
     alpha = -0.411 if is_male else -0.329
     factor_sex = 1.0 if is_male else 1.018

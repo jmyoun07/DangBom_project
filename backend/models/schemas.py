@@ -6,6 +6,8 @@ from datetime import date, datetime
 from pydantic import BaseModel, Field, field_validator
 from typing import Optional
 
+from services.derived import normalize_sex
+
 
 # ── Patient ───────────────────────────────────────────────────
 # v2.1.9 (감사): 의료 수치 범위 검증 추가. 범위는 "생리적으로 가능한 극단"까지
@@ -52,14 +54,14 @@ class PatientBase(BaseModel):
     @field_validator("sex")
     @classmethod
     def _validate_sex(cls, v):
+        # v2.2.6 (감사 H1): 업로드·모델·eGFR 과 동일한 normalize_sex 단일 소스 사용.
+        #   ('남자'/'여자'/'1.0'/'2.0'/'male'/'female' 등도 일관 처리)
         if v is None:
             return v
-        s = str(v).strip().upper()
-        if s in ("M", "1", "남", "MALE"):
-            return "M"
-        if s in ("F", "2", "여", "FEMALE"):
-            return "F"
-        raise ValueError("sex must be M/F (or 1/2, 남/여)")
+        ns = normalize_sex(v)
+        if ns is None:
+            raise ValueError("sex must be M/F (or 1/2, 남/여)")
+        return ns
 
     # ── 소변 dipstick (기본 3 + 확장 6) ────────
     he_upro: Optional[float] = None

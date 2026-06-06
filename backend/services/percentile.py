@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 from pathlib import Path
 from typing import Optional
 
@@ -36,8 +37,20 @@ def _load() -> dict:
     return _CACHE
 
 
+def _finite(x) -> bool:
+    """x 가 유한한 수치인지. None/NaN/inf/비숫자 → False.
+
+    v2.2.6 (감사 NO-GO 수정): age/score=NaN 이 비교를 모두 false 로 만들어 '80+' 버킷이
+    조용히 붙거나 fold=NaN 이 반환되던 문제 방지. (결측이면 percentile/fold 미부착)
+    """
+    try:
+        return x is not None and math.isfinite(float(x))
+    except (TypeError, ValueError):
+        return False
+
+
 def _bucket_for_age(age: float) -> Optional[str]:
-    if age is None:
+    if not _finite(age):
         return None
     a = float(age)
     if a < 19:
@@ -58,15 +71,17 @@ def compute_percentile(disease: str, age: Optional[float], score: Optional[float
           또는 데이터 없으면 None.
     선형 보간 적용 (p10~p90 사이를 직선 연결).
     """
-    if score is None or age is None:
+    if not _finite(score) or not _finite(age):
         return None
     data = _load()
     disease_data = data.get(disease)
     if not disease_data:
         return None
     bucket = _bucket_for_age(age)
-    if not bucket or bucket not in disease_data:
-        # fallback — 가장 가까운 bucket
+    if bucket is None:
+        return None  # v2.2.6: age<19/결측 → 적정 코호트 없음 (60-69 오fallback 방지)
+    if bucket not in disease_data:
+        # 데이터에 해당 버킷이 없을 때만 가장 가까운 성인 버킷으로 fallback
         for fallback in ("60-69", "50-59", "70-79", "40-49"):
             if fallback in disease_data:
                 bucket = fallback
@@ -123,14 +138,16 @@ def compute_fold_change(disease: str, age: Optional[float], score: Optional[floa
           - fold < 1.0: 평균보다 위험 낮음
           - 데이터 없으면 None
     """
-    if score is None or age is None:
+    if not _finite(score) or not _finite(age):
         return None
     data = _load()
     disease_data = data.get(disease)
     if not disease_data:
         return None
     bucket = _bucket_for_age(age)
-    if not bucket or bucket not in disease_data:
+    if bucket is None:
+        return None  # v2.2.6: age<19/결측 → 적정 코호트 없음
+    if bucket not in disease_data:
         for fallback in ("60-69", "50-59", "70-79", "40-49"):
             if fallback in disease_data:
                 bucket = fallback
@@ -154,7 +171,7 @@ def enrich_predictions(predictions: dict, age: Optional[float]) -> dict:
     """
     predict_all() 의 결과 dict 의 각 합병증에 percentile/fold 정보를 in-place 로 주입.
     """
-    if age is None:
+    if not _finite(age):
         return predictions
     for key, info in predictions.items():
         if not isinstance(info, dict):

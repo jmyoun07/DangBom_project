@@ -22,6 +22,7 @@ import pandas as pd
 
 from services.derived import current_age as _current_age_calc
 from services.derived import current_dm_duration as _current_dm_dur_calc
+from services.derived import normalize_sex
 
 logger = logging.getLogger("dbcare.predictor")
 
@@ -254,6 +255,11 @@ def _safe_num(value, default=None):
     return default
 
 
+def _isnan(x) -> bool:
+    """float NaN 판정 (비-float 은 False)."""
+    return isinstance(x, float) and math.isnan(x)
+
+
 def _calc_egfr(crea: float, age: float, sex: int) -> float:
     # v2.1.9 (감사 H3): Cr<=0 / age<=0 방어. 이전엔 가드가 없어 Cr=0 이면
     # min(0,1)**(-0.411) → inf/ZeroDivision 으로 비정상 eGFR 가 모델에 들어갔다.
@@ -262,8 +268,11 @@ def _calc_egfr(crea: float, age: float, sex: int) -> float:
         return np.nan
     if sex == 1:
         kappa, alpha, factor = 0.9, -0.411, 1.0
-    else:
+    elif sex == 2:
         kappa, alpha, factor = 0.7, -0.329, 1.018
+    else:
+        # v2.2.6 (감사 H1): 성별 불명(NaN)이면 여성 묵시 계산 금지 → NaN(imputer 처리).
+        return np.nan
     return (
         141
         * (min(crea / kappa, 1) ** alpha)
@@ -283,55 +292,63 @@ def patient_to_features(patient_data: dict) -> dict:
     # v2.2.2 (H3): age/dm_duration 정규화는 predict_all 진입부(_normalize_age_duration)에서
     #   1회 수행하므로 여기서는 정규화된 d 를 그대로 읽는다 (features·floor·percentile 일관).
     d = patient_data
-    sex_code = 1 if d.get("sex") == "M" else 2
+    # v2.2.6 (감사 H1): 성별 단일 정규화 + 결측/불명은 NaN(여성 묵시 처리 금지 → imputer).
+    _nsex = normalize_sex(d.get("sex"))
+    sex_code = 1 if _nsex == "M" else (2 if _nsex == "F" else np.nan)
 
     # v2.1.3 (Codex C1): 모든 numeric 입력 _safe_num 으로 안전 변환.
     # 문자열 / NaN / inf 케이스에도 죽지 않고 임상적 기본값 사용.
-    glu       = _safe_num(d.get("fbg"),                126.0)
+    # v2.2.6 (감사 H2): 결측 핵심 측정값을 임상 하드디폴트로 메우지 않고 None 으로 두었다가
+    #   출력 직전 NaN 으로 변환해 학습된 KNNImputer(pkg["imputer"])가 코호트 분포로 처리하게 한다
+    #   (train/serve 결측처리 일치). 파생 계산은 None 가드로 NaN 전파.
+    glu       = _safe_num(d.get("fbg"),                None)
     c_peptide = _safe_num(d.get("c_peptide"),          None)
     he_ins    = _safe_num(d.get("he_insulin"),         None)
     if (c_peptide is None or c_peptide <= 0) and he_ins:
-        c_peptide = he_ins / 3.0
-    if c_peptide is None or c_peptide <= 0:
-        c_peptide = 2.7  # insulin 8.0 µU/mL 에 대응하는 정상 참고값
+        c_peptide = he_ins / 3.0       # 구데이터 호환: he_insulin/3 역추정
+    if c_peptide is not None and c_peptide <= 0:
+        c_peptide = None               # 비양수 → 결측 취급 (하드 2.7 제거)
 
-    hba1c = _safe_num(d.get("hba1c"),               7.0)
-    tg    = _safe_num(d.get("triglycerides"),       150.0)
-    chol  = _safe_num(d.get("total_cholesterol"),   200.0)
-    hdl   = _safe_num(d.get("hdl"),                 50.0)
-    crea  = _safe_num(d.get("cr"),                  1.0)
-    sbp   = _safe_num(d.get("sbp"),                 130.0)
-    dbp   = _safe_num(d.get("dbp"),                 80.0)
-    bmi_  = _safe_num(d.get("bmi"),                 25.0)
-    age   = _safe_num(d.get("age"),                 60.0)
-    ht    = _safe_num(d.get("height"),              165.0)
-    wt    = _safe_num(d.get("weight"),              70.0)
+    hba1c = _safe_num(d.get("hba1c"),               None)
+    tg    = _safe_num(d.get("triglycerides"),       None)
+    chol  = _safe_num(d.get("total_cholesterol"),   None)
+    hdl   = _safe_num(d.get("hdl"),                 None)
+    crea  = _safe_num(d.get("cr"),                  None)
+    sbp   = _safe_num(d.get("sbp"),                 None)
+    dbp   = _safe_num(d.get("dbp"),                 None)
+    bmi_  = _safe_num(d.get("bmi"),                 None)
+    age   = _safe_num(d.get("age"),                 None)
+    ht    = _safe_num(d.get("height"),              None)
+    wt    = _safe_num(d.get("weight"),              None)
 
-    # 파생변수 (C-peptide 기반, v2.2)
-    homa_ir = (glu * c_peptide) / 405.0
-    homa_beta = (360 * c_peptide) / (glu - 63) if glu > 63 else np.nan
-    tyg = math.log(tg * glu / 2.0) if tg > 0 and glu > 0 else np.nan
-    bmi_homa = bmi_ * homa_ir
+    # 파생변수 (C-peptide 기반, v2.2) — 입력 결측이면 NaN 전파(→ imputer 처리).
+    homa_ir = (glu * c_peptide) / 405.0 if (glu is not None and glu > 0 and c_peptide is not None and c_peptide > 0) else np.nan
+    homa_beta = (360 * c_peptide) / (glu - 63) if (c_peptide is not None and glu is not None and glu > 63) else np.nan
+    tyg = math.log(tg * glu / 2.0) if (tg is not None and glu is not None and tg > 0 and glu > 0) else np.nan
+    bmi_homa = bmi_ * homa_ir if (bmi_ is not None and not _isnan(homa_ir)) else np.nan
     # LDL: 병원 실측치 우선, 없으면 Friedewald 계산
     # v2.1.9 (감사 H3): Friedewald 는 TG<400 에서만 신뢰 (derived.py 와 일치).
-    # TG≥400 이면 실측 없이 계산하지 않고 NaN → imputer 가 처리.
+    # TG≥400/입력결측이면 NaN → imputer 가 처리.
     ldl_calc = _safe_num(d.get("ldl"), None)
     if ldl_calc is None:
-        ldl_calc = (chol - hdl - tg / 5.0) if tg < 400 else np.nan
+        if chol is not None and hdl is not None and tg is not None and tg < 400:
+            ldl_calc = chol - hdl - tg / 5.0
+        else:
+            ldl_calc = np.nan
     # v2.2.2 (M8): 모델 입력 경로도 음수 파생 차단 (HDL>총콜레스테롤 / SBP<DBP 비정상 입력).
-    if ldl_calc is not None and ldl_calc < 0:
+    if ldl_calc is not None and not _isnan(ldl_calc) and ldl_calc < 0:
         ldl_calc = np.nan
-    non_hdl = chol - hdl
-    if non_hdl < 0:
+    non_hdl = (chol - hdl) if (chol is not None and hdl is not None) else np.nan
+    if not _isnan(non_hdl) and non_hdl < 0:
         non_hdl = np.nan
-    egfr = _calc_egfr(crea, age, sex_code)
-    pp = sbp - dbp
-    if pp < 0:
+    egfr = _calc_egfr(crea, age, sex_code)  # crea/age None·성별 불명 시 np.nan
+    pp = (sbp - dbp) if (sbp is not None and dbp is not None) else np.nan
+    if not _isnan(pp) and pp < 0:
         pp = np.nan
 
     dm_diag_age = _safe_num(d.get("dm_diagnosis_age"), None)
     dm_dur = _safe_num(d.get("dm_duration"), None)
-    if dm_dur is None and dm_diag_age is not None:
+    if dm_dur is None and dm_diag_age is not None and age is not None:
         dm_dur = age - dm_diag_age
     # v2.2.2 (H3): 음수/비현실 이환기간 차단 (미래 dob·age 0 테스트환자 등 → imputer 처리)
     if dm_dur is not None and not (0 <= dm_dur <= 120):
@@ -369,6 +386,24 @@ def patient_to_features(patient_data: dict) -> dict:
             nit_b = np.nan
     else:
         nit_b = np.nan
+
+    # v2.2.6 (감사 H2): 결측(None) 핵심 측정값을 NaN 으로 → predict_single 의 KNNImputer 가 처리.
+    #   (파생 계산은 위에서 None 가드로 이미 완료됨)
+    age = age if age is not None else np.nan
+    glu = glu if glu is not None else np.nan
+    c_peptide = c_peptide if c_peptide is not None else np.nan
+    hba1c = hba1c if hba1c is not None else np.nan
+    tg = tg if tg is not None else np.nan
+    chol = chol if chol is not None else np.nan
+    hdl = hdl if hdl is not None else np.nan
+    crea = crea if crea is not None else np.nan
+    sbp = sbp if sbp is not None else np.nan
+    dbp = dbp if dbp is not None else np.nan
+    bmi_ = bmi_ if bmi_ is not None else np.nan
+    ht = ht if ht is not None else np.nan
+    wt = wt if wt is not None else np.nan
+    dm_dur = dm_dur if dm_dur is not None else np.nan
+    dm_diag_age = dm_diag_age if dm_diag_age is not None else np.nan
 
     return {
         # === 인구통계 ===
@@ -415,8 +450,8 @@ def patient_to_features(patient_data: dict) -> dict:
         "HE_wt":             wt,
 
         # === 간효소 === (v2.1.3 Codex C1: 안전 변환)
-        "HE_ast":            _safe_num(d.get("ast"), 25.0),
-        "HE_alt":            _safe_num(d.get("alt"), 25.0),
+        "HE_ast":            _safe_num(d.get("ast"), np.nan),
+        "HE_alt":            _safe_num(d.get("alt"), np.nan),
 
         # === 소변(확장 9) ===
         "HE_Upro_pos":       _urine_pos(d.get("he_upro")),
@@ -682,8 +717,8 @@ def apply_clinical_floor(predictions: dict, patient_data: dict) -> dict:
         age_val = _as_float(patient_data.get("age"))
         sex_val = patient_data.get("sex")
         if cr is not None and age_val is not None and sex_val is not None and cr > 0:
-            sex_raw = str(sex_val).upper()
-            sex_code = 1 if sex_raw in ("M", "MALE", "1") else 2
+            _nsx = normalize_sex(sex_val)
+            sex_code = 1 if _nsx == "M" else (2 if _nsx == "F" else None)
             try:
                 egfr = _calc_egfr(cr, age_val, sex_code)
             except Exception:

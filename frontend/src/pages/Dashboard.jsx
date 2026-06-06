@@ -80,7 +80,10 @@ function riskPct(key, value, ref) {
 // CKD-EPI 간이 계산 (Cr + age + sex → eGFR)
 function calcEGFR(cr, age, sex) {
   if (!cr || !age) return null;
-  const isMale = (sex === 'M' || sex === 1);
+  const s = String(sex).trim().toUpperCase();
+  const isMale = (s === 'M' || s === '1' || s === '남' || s === '남자' || s === 'MALE');
+  const isFemale = (s === 'F' || s === '2' || s === '여' || s === '여자' || s === 'FEMALE');
+  if (!isMale && !isFemale) return null;  // v2.2.6(감사 H1): 성별 불명 → eGFR 미표시(여성 묵시 금지)
   const kappa = isMale ? 0.9 : 0.7;
   const alpha = isMale ? -0.411 : -0.329;
   const factor = isMale ? 1.0 : 1.018;
@@ -361,7 +364,7 @@ export default function Dashboard() {
               <h2 className="text-base font-bold text-gray-800">{p.name}</h2>
               <div className="flex gap-1.5 mt-0.5">
                 <span className="px-1.5 py-0.5 bg-blue-50 text-blue-600 text-xs rounded font-medium">
-                  {p.sex === 'M' ? 'M' : 'F'}
+                  {p.sex === 'M' ? 'M' : p.sex === 'F' ? 'F' : '-'}
                 </span>
                 <span className="px-1.5 py-0.5 bg-gray-50 text-gray-600 text-xs rounded font-medium">
                   {p.age}{'\uC138'}
