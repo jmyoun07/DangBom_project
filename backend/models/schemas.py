@@ -112,6 +112,10 @@ class PatientUpdate(PatientBase):
 
 class PatientResponse(PatientBase):
     id: int
+    # v2.2.5: 조회 응답은 관대하게 — 이름/차트번호가 비어 있는 불완전 행도 "Field required"(422)로
+    #   목록·상세가 통째로 깨지지 않게 Optional 로 완화. (생성 검증은 PatientCreate 에서 계속 강제)
+    name: Optional[str] = None
+    chart_no: Optional[str] = None
     upload_date: Optional[datetime] = None
     risk_level: Optional[str] = None
 
