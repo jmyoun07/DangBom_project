@@ -76,8 +76,10 @@ CSV_COLUMN_MAP = {
     # ── ML 독립변수 (v2 — 병원 수집 변수 기준) ──
     # 인구통계·당뇨
     "age": "age",
+    "나이": "age", "연령": "age", "만나이": "age",  # v2.2.4: 한글 '나이' 별칭(누락이었음)
     "sex": "sex",
     "DM_diagnosis_age": "dm_diagnosis_age",
+    "진단나이": "dm_diagnosis_age", "진단연령": "dm_diagnosis_age",  # v2.2.4
     "dm_medication": "dm_medication",
     "당뇨약복용": "dm_medication",
     "insulin_medication": "insulin_medication",
@@ -178,13 +180,35 @@ CSV_COLUMN_MAP = {
     "총 콜레스테롤": "total_cholesterol",
 }
 
-# v2.2.2: 공백/대소문자 차이를 흡수하는 정규화 매핑 (예: "수축기 혈압" ↔ "수축기혈압", "HBA1C" ↔ "hba1c")
-_NORM_COLUMN_MAP = {str(k).replace(" ", "").lower(): v for k, v in CSV_COLUMN_MAP.items()}
+# v2.2.2/2.2.4: 공백·대소문자 차이를 흡수하는 정규화 매핑.
+#   ("수축기 혈압"↔"수축기혈압", "HBA1C"↔"hba1c", 탭/전각공백(U+3000)/NBSP(U+00A0)/줄바꿈 제거)
+_WS_DELETE = dict.fromkeys(ord(c) for c in " \t\n\r\f\v　 ")
+
+
+def _norm_key(s):
+    return str(s).translate(_WS_DELETE).lower()
+
+
+_NORM_COLUMN_MAP = {_norm_key(k): v for k, v in CSV_COLUMN_MAP.items()}
 
 
 def _lookup_db_field(csv_col):
-    """원본 헤더 → DB 필드. 정확 매칭 우선, 없으면 공백·대소문자 무시 정규화 매칭."""
-    return CSV_COLUMN_MAP.get(csv_col) or _NORM_COLUMN_MAP.get(str(csv_col).replace(" ", "").lower())
+    """원본 헤더 → DB 필드. 정확 매칭 우선, 없으면 공백류·대소문자 무시 정규화 매칭."""
+    return CSV_COLUMN_MAP.get(csv_col) or _NORM_COLUMN_MAP.get(_norm_key(csv_col))
+
+
+def _dedup_cols(cols):
+    """중복 컬럼명을 pandas 처럼 c, c.1, c.2 로 구분 (row.get 모호성·조용한 덮어쓰기 방지)."""
+    seen, out = {}, []
+    for c in cols:
+        c = "" if c is None else str(c).strip()
+        if c in seen:
+            seen[c] += 1
+            out.append(f"{c}.{seen[c]}")
+        else:
+            seen[c] = 0
+            out.append(c)
+    return out
 
 
 def _read_excel_robust(content: bytes, string_dtypes: dict):
@@ -194,15 +218,79 @@ def _read_excel_robust(content: bytes, string_dtypes: dict):
     openpyxl 이 'apply_stylesheet' 에서 죽는다. calamine(Rust 기반)은 이런 파일도 읽으므로
     calamine 우선 시도 → 실패/미설치 시 openpyxl fallback. 둘 다 실패하면 예외.
     """
+    # v2.2.4: 멀티시트·헤더오프셋 대응 — 전체 시트를 header 없이 str 로 읽은 뒤
+    #   알려진 헤더(필수 sex/fbg/hba1c 가중)가 가장 많이 매칭되는 (시트, 헤더행)을 자동 선택.
+    raw_sheets = None
     last_err = None
     for engine in ("calamine", "openpyxl"):
         try:
-            return pd.read_excel(io.BytesIO(content), engine=engine, sheet_name=0, dtype=string_dtypes)
+            raw_sheets = pd.read_excel(
+                io.BytesIO(content), engine=engine, sheet_name=None, header=None, dtype=str
+            )
+            break
         except ImportError as e:
             last_err = e  # 엔진 미설치 → 다음 엔진
         except Exception as e:
             last_err = e  # 파싱 실패 → 다음 엔진
-    raise last_err or RuntimeError("엑셀 파서 없음")
+    if not raw_sheets:
+        raise last_err or RuntimeError("엑셀 파서 없음")
+
+    best = None  # (score, sheet, header_idx)
+    for sname, raw in raw_sheets.items():
+        if raw is None or raw.empty:
+            continue
+        for hidx in range(min(8, len(raw))):
+            mapped = req = 0
+            for cell in raw.iloc[hidx].tolist():
+                if cell is None:
+                    continue
+                dbf = _lookup_db_field(str(cell).strip())
+                if dbf:
+                    mapped += 1
+                    if dbf in ("sex", "fbg", "hba1c"):
+                        req += 1
+            score = mapped + req * 10  # 필수 헤더에 가중
+            if score > 0 and (best is None or score > best[0]):
+                best = (score, sname, hidx)
+
+    if best is None:
+        # 헤더 자동탐지 실패 → 첫 시트 1행을 헤더로 폴백
+        raw = next(iter(raw_sheets.values()))
+        if raw is None or raw.empty:
+            return pd.DataFrame()
+        df = raw.iloc[1:].copy()
+        df.columns = _dedup_cols(raw.iloc[0].tolist())
+        return df.reset_index(drop=True)
+
+    _, sname, hidx = best
+    raw = raw_sheets[sname]
+    df = raw.iloc[hidx + 1:].copy()
+    df.columns = _dedup_cols(raw.iloc[hidx].tolist())
+    return df.reset_index(drop=True)
+
+
+def _read_csv_robust(content: bytes, string_dtypes: dict):
+    """CSV 다중 인코딩 대응.
+
+    한국 병원/엑셀이 'CSV 저장' 하면 UTF-8 이 아니라 CP949(=ANSI/EUC-KR) 인 경우가 흔하다.
+    UTF-8 고정으로 읽으면 한글이 깨지거나 UnicodeDecodeError 가 난다. BOM 포함 UTF-8 →
+    UTF-8 → CP949 → EUC-KR 순으로 시도한다. (latin-1 은 무조건 성공하지만 한글이 깨지므로 제외)
+    """
+    last_err = None
+    for enc in ("utf-8-sig", "utf-8", "cp949", "euc-kr"):
+        try:
+            df = pd.read_csv(io.BytesIO(content), dtype=string_dtypes, encoding=enc)
+            # v2.2.4: 구분자 오감지 — 단일 컬럼인데 헤더에 ;/tab/| 가 있으면 자동 구분자 추론으로 재시도
+            #   (한국 엑셀 로케일이 'CSV' 를 세미콜론으로 저장하는 흔한 케이스)
+            if df.shape[1] == 1 and any(d in str(df.columns[0]) for d in (";", "\t", "|")):
+                df = pd.read_csv(io.BytesIO(content), dtype=string_dtypes, encoding=enc, sep=None, engine="python")
+            return df
+        except UnicodeDecodeError as e:
+            last_err = e  # 인코딩 불일치 → 다음 인코딩
+        except Exception as e:
+            last_err = e  # 빈 파일/형식 오류 등은 그대로 전파(다음 인코딩도 같을 것)
+            break
+    raise last_err or RuntimeError("CSV 파싱 실패")
 
 
 def _is_blank_cell(value) -> bool:
@@ -310,6 +398,10 @@ def _row_to_patient_data(row, idx: int, column_lookup: dict) -> dict:
             if num is not None:
                 patient_data[db_field] = num
 
+    # v2.2.4: 모든 셀이 빈 행 → ghost 환자(임상값 0) 생성 방지. None 반환 → 호출부에서 skip.
+    if not patient_data:
+        return None
+
     # 이름 기본값
     if not str(patient_data.get("name", "")).strip():
         patient_data["name"] = f"환자_{idx + 1}"
@@ -355,10 +447,9 @@ async def upload_csv(
     # v2.1.9 (감사): 서버측 검증 — 확장자 + 크기 (프론트 검증만 믿지 않음)
     # v2.1.12: 엑셀(.xlsx) 지원 추가.
     filename = (file.filename or "").lower()
-    is_csv = filename.endswith(".csv")
-    is_xlsx = filename.endswith(".xlsx")
-    if not (is_csv or is_xlsx):
-        raise HTTPException(status_code=400, detail="CSV 또는 엑셀(.xlsx) 파일만 업로드 가능합니다.")
+    is_csv_ext = filename.endswith(".csv")
+    is_excel_ext = filename.endswith((".xlsx", ".xlsm", ".xls", ".ods"))
+    # v2.2.4: 확장자 거부는 content 확인(매직바이트) 후로 미룬다 — 확장자 .csv 로 위장한 엑셀 대응.
 
     content = await file.read()
     MAX_UPLOAD_BYTES = 20 * 1024 * 1024  # 20MB
@@ -375,16 +466,19 @@ async def upload_csv(
         "phone": "string", "연락처": "string", "전화번호": "string",
         "sex": "string", "성별": "string",
     }
-    # v2.2.2: 내용 기반 판별 — xlsx(zip)는 'PK' 매직으로 시작. 확장자가 .csv 여도
-    #   실제 내용이 엑셀이면 엑셀로 파싱한다 (병원 export 가 xlsx 를 .csv 로 저장한 경우 대응).
-    looks_xlsx = content[:2] == b"PK"
-    use_excel = is_xlsx or looks_xlsx
+    # v2.2.4: 내용 기반 포맷 판별 (확장자 위장 대응).
+    #   PK = xlsx/xlsm/ods(zip), D0 CF 11 E0 = 구형 .xls(OLE2 compound).
+    looks_zip = content[:2] == b"PK"
+    looks_ole = content[:4] == b"\xD0\xCF\x11\xE0"
+    use_excel = is_excel_ext or looks_zip or looks_ole
+    if not (is_csv_ext or use_excel):
+        raise HTTPException(status_code=400, detail="CSV 또는 엑셀(.csv/.xlsx/.xls) 파일만 업로드 가능합니다.")
     file_label = "엑셀" if use_excel else "CSV"
     try:
         if use_excel:
             df = _read_excel_robust(content, string_dtypes)
         else:
-            df = pd.read_csv(io.BytesIO(content), dtype=string_dtypes)
+            df = _read_csv_robust(content, string_dtypes)  # v2.2.4: 다중 인코딩(UTF-8/CP949/EUC-KR)
     except Exception as e:
         raise HTTPException(
             status_code=400,
@@ -397,6 +491,9 @@ async def upload_csv(
     MAX_ROWS = 10000
     if len(df) > MAX_ROWS:
         raise HTTPException(status_code=413, detail=f"행이 너무 많습니다 (최대 {MAX_ROWS}행).")
+    # v2.2.4: 헤더만 있고 데이터가 0행이면 '성공(0건)' 으로 조용히 넘어가지 않고 명확히 안내.
+    if len(df) == 0:
+        raise HTTPException(status_code=400, detail="데이터 행이 없습니다. 헤더만 있거나 빈 파일입니다.")
 
     # ── 1) 매핑 미리보기 ─────────────────────────────────
     mapping_preview = []
@@ -464,12 +561,18 @@ async def upload_csv(
 
     # ── 3) 행 변환 (DB 접근 없음) ─────────────────────────
     rows_data = []
+    empty_rows = 0
     for idx, row in df.iterrows():
         try:
             pdata = _row_to_patient_data(row, idx, column_lookup)
+            if pdata is None:  # v2.2.4: 빈 행 skip (ghost 환자 방지)
+                empty_rows += 1
+                continue
             rows_data.append((idx, pdata))
         except Exception as e:
             warnings.append(f"행 {idx + 1}: 변환 실패 - {str(e)}")
+    if empty_rows:
+        warnings.append(f"빈 행 {empty_rows}개를 건너뛰었습니다.")
 
     # ── 4) 자동 chart_no 생성 (DB count 루프 밖에서 1회) ─
     existing_total = db.query(Patient).count()
