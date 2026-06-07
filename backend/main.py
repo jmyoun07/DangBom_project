@@ -21,7 +21,7 @@ apply_lightweight_migrations()
 app = FastAPI(
     title="DB-care API",
     description="당뇨 합병증 예측 프로그램 백엔드",
-    version="2.2.6",
+    version="2.2.7",
 )
 
 REQUIRED_API_TOKEN = os.environ.get("DBCARE_API_TOKEN", "").strip()
@@ -87,7 +87,7 @@ def health_check():
     return {
         "status": "ok",
         "service": "DB-care API",
-        "version": "2.2.6",
+        "version": "2.2.7",
         "instance_id": os.environ.get("DBCARE_INSTANCE_ID"),
     }
 

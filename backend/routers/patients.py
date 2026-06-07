@@ -521,6 +521,7 @@ def update_patient(patient_id: int, body: PatientUpdate, background: BackgroundT
         diffs.append((key, old_val, new_val))
 
     # ── 2) 실제 적용 ──
+    _old_exam = patient.exam_date  # v2.2.7: 검사일 변경 시 기존 측정이력 행 이동에 사용
     for key, value in changes.items():
         if hasattr(patient, key):
             setattr(patient, key, value)
@@ -528,6 +529,35 @@ def update_patient(patient_id: int, body: PatientUpdate, background: BackgroundT
     # ── 2.5) v2.2.2 (H2): 파생값(eGFR/BMI/LDL_calc/HOMA/맥압/이환기간) 재계산 ──
     #   입력(cr·체중·지질·혈압 등) 변경이 화면 파생 수치에 반영되도록 DB 컬럼 갱신.
     _recompute_derived(patient)
+
+    # ── 2.7) v2.2.7 (H6): 검사 수치(c_peptide/hba1c/cr)·검사일 변경 시 추이 차트 소스인
+    #   measurement_history 의 '해당 검사일 방문' 행을 환자 현재값과 동기화한다.
+    #   (이전엔 PATCH 가 Patient row 만 갱신 → 카드 최신값과 추이 차트 마지막 점이 영구 불일치)
+    if {"c_peptide", "hba1c", "cr", "exam_date"} & set(changes.keys()):
+        new_exam = patient.exam_date
+        if new_exam is not None:   # 검사일이 비면 가짜 today 행을 만들지 않는다
+            def _meas_at(d):
+                return db.query(MeasurementHistory).filter(
+                    MeasurementHistory.patient_id == patient.id,
+                    MeasurementHistory.measured_at == d,
+                ).first()
+            target = _meas_at(new_exam)
+            # 검사일 자체가 바뀐 경우: 새 날짜 행이 없고 기존(old) 방문 행이 있으면 그 행을 새 날짜로
+            #   '이동'(중복 방문 생성 방지). 새 날짜에 이미 다른 방문이 있으면 그 행을 갱신한다.
+            if target is None and "exam_date" in changes and _old_exam is not None and _old_exam != new_exam:
+                moved = _meas_at(_old_exam)
+                if moved is not None:
+                    moved.measured_at = new_exam
+                    target = moved
+            if target is not None:
+                target.c_peptide = patient.c_peptide
+                target.hba1c = patient.hba1c
+                target.cr = patient.cr
+            elif any(v is not None for v in (patient.c_peptide, patient.hba1c, patient.cr)):
+                db.add(MeasurementHistory(
+                    patient_id=patient.id, measured_at=new_exam,
+                    c_peptide=patient.c_peptide, hba1c=patient.hba1c, cr=patient.cr,
+                ))
 
     # ── 3) 감사 로그 작성 (실제 변경된 필드만) ──
     for field, old, new in diffs:

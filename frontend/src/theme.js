@@ -237,7 +237,7 @@ export function maskName(name, { mode = 'middle' } = {}) {
 // ── 정상 범위 참고치 (검사 수치 테이블의 '참고값' 열에 사용) ──
 export const REFERENCE_RANGES = {
   hba1c:       '\u2264 5.6 (\uc815\uc0c1) / 5.7\u20136.4 (\uc8fc\uc758) / \u2265 6.5 (\ub2f9\ub1e8)',
-  c_peptide:   '0.9 \u2013 7.1 ng/mL',
+  c_peptide:   '1.0 \u2013 3.5 ng/mL',
   glucose:     '70 \u2013 99 (\uacf5\ubcf5)',
   ggt:         '\u2264 50 U/L',
   alt:         '\u2264 40 U/L',

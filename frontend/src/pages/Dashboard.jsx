@@ -38,7 +38,7 @@ const modelNameMap = {
 // - high: 정상 상한 이상 = 높을수록 나쁨  (예: HbA1c 7% 이상이면 100%)
 // - low : 정상 하한 이하 = 낮을수록 나쁨  (예: eGFR 60 이하이면 100%)
 const riskFactors = [
-  { label: 'C-peptide', unit: UNITS.cpeptide,  key: 'c_peptide', ref: [0.8, 3.5], normalLabel: '0.8\u20133.5 ng/mL' },
+  { label: 'C-peptide', unit: UNITS.cpeptide,  key: 'c_peptide', ref: [1.0, 3.5], normalLabel: '1.0\u20133.5 ng/mL' },
   { label: 'HbA1c',     unit: UNITS.percent,   key: 'hba1c',     ref: [0, 7.0],    normalLabel: '< 7%' },
   { label: '\uACF5\uBCF5\uD608\uB2F9', unit: UNITS.glucose, key: 'fbg', ref: [0, 126], normalLabel: '< 126 mg/dL' },
   { label: 'SBP',       unit: UNITS.bp,        key: 'sbp',       ref: [0, 140],    normalLabel: '< 140 mmHg' },
@@ -323,7 +323,9 @@ export default function Dashboard() {
     value: m.c_peptide,
   }));
 
-  const egfr = calcEGFR(p.cr, p.age, p.sex);
+  // v2.2.7 (F2): 백엔드 단일소스 eGFR(p.egfr, normalize_sex 적용) 우선 — 모델/PatientDetail 과 일치.
+  //   클라이언트 calcEGFR 은 백엔드 미산출 시에만 fallback.
+  const egfr = (p.egfr != null && p.egfr !== '') ? Math.round(p.egfr) : calcEGFR(p.cr, p.age, p.sex);
 
   const getMetricValue = (metricKey) => {
     const map = {

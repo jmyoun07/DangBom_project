@@ -226,14 +226,15 @@ class Patient(Base):
     # ORM 컬럼 자체는 남겨두지 않음. 기존 DB 에는 남아있을 수 있지만
     # Pydantic 스키마에서 노출 안 되므로 API 로는 read/write 불가.
 
-    # 소변 dipstick (원시값 0~4)
+    # 소변 dipstick (KNHANES 코드: 1=음성, ≥2=양성. predictor._urine_pos threshold=2)
+    #   v2.2.7: 입력 폼(ManualPatientForm/EditPatientModal) 모두 1~6 로 통일됨.
     he_upro = Column(Float)
     he_uglu = Column(Float)
     he_ubld = Column(Float)
     # 소변 확장 (병원 dipstick 전체 — 재학습 v2 모델 사용)
-    urine_bil = Column(Float)       # BIL (빌리루빈)      0/1/2/3
-    urine_uro = Column(Float)       # URO (유로빌리노겐)  0/1/2/3 (>=2 = 비정상)
-    urine_ket = Column(Float)       # KET (케톤)         0/1/2/3/4
+    urine_bil = Column(Float)       # BIL (빌리루빈)      1=음성 ~ 5 (≥2 양성)
+    urine_uro = Column(Float)       # URO (유로빌리노겐)  1=음성 ~ 5 (≥2 비정상)
+    urine_ket = Column(Float)       # KET (케톤)         1=음성 ~ 5 (≥2 양성)
     urine_nit = Column(Integer)     # NIT (아질산염)     0/1
     urine_ph = Column(Float)        # pH
     urine_sg = Column(Float)        # 요비중 (1.005~1.030)

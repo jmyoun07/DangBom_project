@@ -24,6 +24,11 @@ const PRELOAD_FIELDS = [
 //
 // 빈 값(""): 백엔드로 null 로 전송 → derived 가 안전한 기본값으로 보정.
 
+// v2.2.7 (H7): 소변 dipstick 코드를 EditPatientModal·백엔드(KNHANES, 1=음성 ≥2=양성)와 통일.
+//   이전엔 ManualForm 이 '0~4', EditModal 이 '1~6' 으로 인코딩이 달라 같은 환자가 입력 화면에
+//   따라 신장위험 예측이 달라졌다. 두 화면 모두 1-based 로 일원화.
+const DIP_OPTS = [['1', '1 (음성)'], ['2', '2 (±)'], ['3', '3 (1+)'], ['4', '4 (2+)'], ['5', '5 (3+)'], ['6', '6 (4+)']];
+
 const SECTIONS = [
   {
     title: '기본 정보',
@@ -91,12 +96,12 @@ const SECTIONS = [
     title: '소변 검사 (dipstick)',
     icon: Beaker,
     fields: [
-      { key: 'he_upro',   label: '단백뇨',  type: 'number', step: '0.1', priority: 'optional', hint: '0(음성)~4' },
-      { key: 'he_uglu',   label: '요당',    type: 'number', step: '0.1', priority: 'optional', hint: '0~4' },
-      { key: 'he_ubld',   label: '요잠혈',  type: 'number', step: '0.1', priority: 'optional', hint: '0~4' },
-      { key: 'urine_bil', label: '빌리루빈', type: 'number', step: '0.1', priority: 'optional' },
-      { key: 'urine_uro', label: '우로빌리노겐', type: 'number', step: '0.1', priority: 'optional' },
-      { key: 'urine_ket', label: '케톤',    type: 'number', step: '0.1', priority: 'optional' },
+      { key: 'he_upro',   label: '단백뇨',  type: 'select', options: DIP_OPTS, priority: 'optional' },
+      { key: 'he_uglu',   label: '요당',    type: 'select', options: DIP_OPTS, priority: 'optional' },
+      { key: 'he_ubld',   label: '요잠혈',  type: 'select', options: DIP_OPTS, priority: 'optional' },
+      { key: 'urine_bil', label: '빌리루빈', type: 'select', options: DIP_OPTS.slice(0, 5), priority: 'optional' },
+      { key: 'urine_uro', label: '우로빌리노겐', type: 'select', options: DIP_OPTS.slice(0, 5), priority: 'optional' },
+      { key: 'urine_ket', label: '케톤',    type: 'select', options: DIP_OPTS.slice(0, 5), priority: 'optional' },
       { key: 'urine_nit', label: '아질산염', type: 'select', options: [['0','음성'], ['1','양성']], priority: 'optional' },
       { key: 'urine_ph',  label: 'pH',      type: 'number', step: '0.1', priority: 'optional' },
       { key: 'urine_sg',  label: '비중',    type: 'number', step: '0.001', priority: 'optional' },

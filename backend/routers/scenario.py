@@ -479,7 +479,9 @@ def scenario_simulate(body: ScenarioRequest, db: Session = Depends(get_db)):
 
     # ── 집중관리 시 시나리오 (baseline-aware) ──
     # v2.2.2 (H5/안전): 개선된 수치를 먼저 산출해 임상 안전망을 재평가한다.
-    hba1c_after = max(5.5, body.hba1c - 1.0)
+    # v2.2.7: 이미 정상(예: 5.0)인 HbA1c 가 5.5 로 '상승'하는데 개선으로 표시되던 버그 수정 —
+    #   현재값보다 높아지지 않도록 clamp (정상 도달 환자는 '유지').
+    hba1c_after = min(body.hba1c, max(5.5, body.hba1c - 1.0))
 
     # v2.1.2 — C-peptide 변화는 정상범위(1.0~3.5)를 향해 수렴해야 의학적으로 옳음.
     #   • > 3.5: 인슐린 저항성 보상으로 과분비 중 → 관리 시 정상범위로 ↓
@@ -603,19 +605,34 @@ def scenario_simulate(body: ScenarioRequest, db: Session = Depends(get_db)):
             grad_floor_level = None
         else:
             score = round(_clamp(score, 1, 99), 1)
-        # v2.2.2 (F1 역전 방지): 졸업(완치 목표)은 집중관리보다 항상 좋아야(낮아야) 한다.
-        # 졸업은 ML 재예측, 집중은 휴리스틱이라 방식이 달라 졸업이 더 나쁘게 나올 수 있음.
-        # → 집중관리 점수의 90% 이하로 clamp 해 "졸업 ≤ 집중 ≤ 방치" 단조성 보장.
-        intensive_info = intensive_complications.get(short_name, {})
-        intensive_score = intensive_info.get("score")
-        if intensive_score is not None:
-            score = round(min(score, intensive_score * 0.9), 1)
-        # 단조성 점수 위에 잔존 안전망 등급을 최소 보장 (eGFR<45 등은 졸업해도 고위험 유지).
+        # v2.2.7 (H1 수정): 졸업 점수는 '표준 졸업값 ML 예측(grad_pred) + 잔존 안전망'으로만
+        #   고정한다. 이전엔 min(score, intensive*0.9) 로 슬라이더 종속인 집중관리 점수에 묶여,
+        #   "졸업=고정 표준"이라면서도 슬라이더를 움직이면 졸업 위험바가 바뀌는 모순이 있었다.
+        #   단조성(졸업 ≤ 집중 ≤ 방치)은 아래 별도 패스에서 집중/방치를 졸업 기준으로 끌어올려
+        #   보장한다(졸업은 고정 유지).
         level = _max_level(_level(score, short_name, age), grad_floor_level)
         grad_complications[short_name] = {
             "level": level,
             "score": _score_for_level(score, level, short_name, age),
         }
+
+    # v2.2.7 (H1 단조성): 졸업은 고정값이므로, 졸업 ≤ 집중 ≤ 방치 를 '집중/방치를 졸업 이상으로
+    #   끌어올려' 보장한다. (6개월 집중관리가 '완치 졸업'보다 좋을 수 없고, 방치가 집중보다 나을 수 없다.)
+    for short_name, grad_info in grad_complications.items():
+        g = grad_info.get("score")
+        if g is None:
+            continue
+        ic = intensive_complications.get(short_name, {})
+        if ic.get("score") is not None and ic["score"] < g:
+            lvl = _max_level(_level(g, short_name, age), intensive_floor.get(short_name))
+            ic["level"] = lvl
+            ic["score"] = _score_for_level(g, lvl, short_name, age)
+        nc = neglect_complications.get(short_name, {})
+        isc = ic.get("score")
+        if nc.get("score") is not None and isc is not None and nc["score"] < isc:
+            lvl = _max_level(_level(isc, short_name, age), current_floor.get(short_name))
+            nc["level"] = lvl
+            nc["score"] = _score_for_level(isc, lvl, short_name, age)
 
     # grad_life / grad_cost 는 위 '졸업 anchor' 블록에서 고정값으로 이미 산출됨(슬라이더 무관).
     delta_life = grad_life - neglect_life

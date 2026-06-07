@@ -522,6 +522,18 @@ async def upload_csv(
             })
             warnings.append(f"'{csv_col}' 컬럼은 매핑되지 않았습니다.")
 
+    # v2.2.7: 여러 헤더가 같은 DB 필드로 매핑되면 한 행에서 뒤 컬럼이 앞 값을 무경고로 덮어쓴다.
+    #   (예: 'HE_HDL_st2' 와 'HDL' 둘 다 hdl) → 어느 값이 채택됐는지 알 수 없어 정합성 훼손. 경고.
+    _field_to_cols = {}
+    for _c, _f in column_lookup.items():
+        _field_to_cols.setdefault(_f, []).append(_c)
+    for _f, _cols in _field_to_cols.items():
+        if len(_cols) > 1:
+            warnings.append(
+                f"여러 컬럼 {_cols} 이(가) 같은 항목 '{_f}' 로 매핑됩니다 — "
+                f"한 행에 값이 다르면 뒤 컬럼 값이 앞 값을 덮어씁니다. 컬럼을 하나만 남겨주세요."
+            )
+
     # ── 2) 필수 컬럼 체크 ────────────────────────────────
     # v2.2.2: 원본 헤더가 아니라 '매핑된 DB 필드' 기준으로 체크 → 헤더 변형(HbA1c/성별/띄어쓰기)도
     #   매핑만 되면 통과. (이전엔 raw 헤더 비교라 "HbA1c"(↔hba1c 대소문자)가 누락 판정됨)
