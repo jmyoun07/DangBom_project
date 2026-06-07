@@ -78,3 +78,31 @@ age_distribution.txt
 분포_*.txt
 codex_v213_full19_prediction_probe.csv
 *.iss.bak
+
+# ───────── v2.2.7 정리: GitHub 미추적 (로컬은 보존) — 연구·개발 산출물, 앱 구동 무관 ─────────
+# 학습/연구 폴더 (모델 .pkl 은 backend/ml/models 에만 유지)
+/공통_전처리/
+/신장질환/
+/심혈관/
+/망막병증/
+/프로그램 UI 이미지/
+# 개발 노트
+/변수탐색_*.txt
+/기존_3개모델_*.md
+/TODO_병원피드백.md
+/feedback_doc.txt
+/CHECKPOINT.md
+# 중복/레거시 빌드 (CI 는 dbcare-backend.spec + backend_entry.py 사용)
+/DB-care.spec
+/launcher.py
+/build-exe.ps1
+/build-setup.ps1
+/build-tauri.ps1
+/run-dev.sh
+/requirements-desktop.txt
+# 로컬 개발 설정
+/.claude/
+/.mcp.json
+# 레거시 Inno Setup (Tauri nsis/msi 사용). version_info.txt 만 spec 이 참조하므로 유지
+/installer/*
+!/installer/version_info.txt
