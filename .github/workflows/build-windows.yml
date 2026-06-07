@@ -1,10 +1,17 @@
 name: Build Windows Installer
 
 on:
+  # v2.2.7: 매 push 마다 빌드하지 않는다 — 무료 Actions 분(비공개 2,000분/월) 소진 방지.
+  #   Windows 빌드는 '릴리스 태그(v*) 푸시' 또는 '수동 실행(Actions 탭 Run workflow)' 시에만 돈다.
+  #   (코드만 push 할 때는 빌드 안 함 → 결제/한도 문제 재발 방지)
   push:
-    branches: [main]
     tags: ['v*']
   workflow_dispatch: {}
+
+# 같은 ref 의 중복/연속 빌드는 이전 것을 자동 취소 (병렬 낭비·분 소진 방지)
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: write   # Release publish 권한 (tag push 시)
@@ -13,8 +20,8 @@ jobs:
   build:
     runs-on: windows-latest
     # 첫 빌드: Rust 컴파일 9~10분 + PyInstaller 3분 + NSIS 7분 + WiX MSI 5~7분 = 25~30분
-    # 캐시 hit 후: 10~15분. 안전 마진 120분.
-    timeout-minutes: 120
+    # 캐시 hit 후: 10~15분. v2.2.7: 런너웨이 빌드 방지 위해 마진 60분으로 축소.
+    timeout-minutes: 60
 
     steps:
       - name: Checkout
