@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Upload, FileText, CheckCircle, AlertTriangle, AlertCircle, Info, X, Database, Sparkles, ArrowRight, FileSpreadsheet, UserPlus } from 'lucide-react';
+import { Upload, FileText, CheckCircle, AlertTriangle, AlertCircle, Info, X, Database, Sparkles, ArrowRight, FileSpreadsheet, UserPlus, MinusCircle } from 'lucide-react';
 import api, { errToText, errorMessage } from '../api/client';
 import { useToast } from '../contexts/ToastContext';
 import { prodSafeError } from '../theme';
@@ -410,6 +410,7 @@ export default function Home() {
                         </td>
                         <td className="px-4 py-1">
                           {m.status === 'mapped' && <span className="text-green-600 flex items-center gap-1"><CheckCircle size={11} aria-hidden="true" />{'\uC131\uACF5'}</span>}
+                          {m.status === 'ignored' && <span className="text-gray-400 flex items-center gap-1"><MinusCircle size={11} aria-hidden="true" />{'\uCC38\uACE0\uC6A9\u00B7\uBBF8\uC800\uC7A5'}</span>}
                           {m.status === 'unmapped' && <span className="text-orange-600 flex items-center gap-1"><AlertTriangle size={11} aria-hidden="true" />{'\uBBF8\uB9E4\uD551'}</span>}
                           {m.status === 'pending' && <span className="text-gray-400">{'\uB300\uAE30'}</span>}
                         </td>

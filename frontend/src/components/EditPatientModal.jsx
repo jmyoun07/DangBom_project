@@ -102,8 +102,8 @@ const SECTIONS = [
     title: '생활습관',
     fields: [
       { key: 'smoking', label: '흡연', type: 'select', options: [{ v: 0, l: '비흡연' }, { v: 1, l: '흡연' }] },
-      { key: 'drinking', label: '음주', type: 'select', options: [{ v: 0, l: '비음주' }, { v: 1, l: '음주' }] },
-      { key: 'exercise', label: '규칙적 운동', type: 'select', options: [{ v: 0, l: '안함' }, { v: 1, l: '주 150분 이상' }] },
+      { key: 'drinking', label: '음주 빈도', type: 'select', options: [{ v: 0, l: '0 (안 함)' }, { v: 1, l: '1 (가끔)' }, { v: 2, l: '2 (자주)' }, { v: 3, l: '3 (매일)' }] },
+      { key: 'exercise', label: '운동 빈도', type: 'select', options: [{ v: 0, l: '0 (안 함)' }, { v: 1, l: '1 (가끔)' }, { v: 2, l: '2 (주 1~2회)' }, { v: 3, l: '3 (주 3회+)' }] },
       { key: 'sleep_hours', label: '일평균 수면시간', type: 'number', step: '0.5', unit: '시간' },
     ],
   },

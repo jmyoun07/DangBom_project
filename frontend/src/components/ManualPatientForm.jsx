@@ -111,9 +111,9 @@ const SECTIONS = [
     title: '생활 습관',
     icon: Cigarette,
     fields: [
-      { key: 'smoking',     label: '현재 흡연',         type: 'select', options: [['0','비흡연'], ['1','흡연']], priority: 'optional' },
-      { key: 'drinking',    label: '월 1회 이상 음주',   type: 'select', options: [['0','없음'], ['1','음주']],   priority: 'optional' },
-      { key: 'exercise',    label: '주 3회 이상 유산소', type: 'select', options: [['0','없음'], ['1','운동']],   priority: 'optional' },
+      { key: 'smoking',     label: '현재 흡연',   type: 'select', options: [['0','비흡연'], ['1','흡연']], priority: 'optional' },
+      { key: 'drinking',    label: '음주 빈도',   type: 'select', options: [['0','0 (안 함)'], ['1','1 (가끔)'], ['2','2 (자주)'], ['3','3 (매일)']],     priority: 'optional' },
+      { key: 'exercise',    label: '운동 빈도',   type: 'select', options: [['0','0 (안 함)'], ['1','1 (가끔)'], ['2','2 (주 1~2회)'], ['3','3 (주 3회+)']], priority: 'optional' },
       { key: 'sleep_hours', label: '수면 시간',         unit: '시간', type: 'number', step: '0.5', priority: 'optional' },
     ],
   },
@@ -248,7 +248,8 @@ export default function ManualPatientForm() {
         if (f.type === 'number') {
           const n = parseFloat(v);
           out[f.key] = Number.isFinite(n) ? n : null;
-        } else if (f.type === 'select' && f.options.every(([opt]) => opt === '0' || opt === '1')) {
+        } else if (f.type === 'select' && f.options.every(([opt]) => /^\d+$/.test(opt))) {
+          // 숫자 코드 select(0/1, 0~3 빈도, dipstick 1~6)는 int 로 저장. sex(M/F) 는 문자열 유지.
           out[f.key] = parseInt(v, 10);
         } else {
           out[f.key] = v;

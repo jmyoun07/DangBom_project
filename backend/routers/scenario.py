@@ -535,10 +535,17 @@ def build_scenario_payload(patient, pdict, age, sim_hba1c, sim_cpep, base_hba1c,
     # 인슐린 시작 확률 — 저위험 환자는 거의 0, 고위험 + 악화 → 90%
     insulin_prob = int(_clamp(baseline_sev * (15 + drift_worse * 60), 2, 90))
 
-    # 당뇨약 개수 추정
-    drug_before = 1 if (sim_hba1c < 7.5 and baseline_sev < 0.5) else 2
-    drug_after = drug_before + int(_clamp(baseline_sev * 1.5 + drift_worse * 1.5, 0, 4))
-    drug_after = min(5, drug_after)
+    # 당뇨약 개수 — v2.3.3: 병원이 실제 dm_med_count 를 제공하면 그 값을 baseline 으로 쓰고,
+    #   없으면 기존 휴리스틱 추정. 방치 시 baseline 대비 증가.
+    _real_drug = pdict.get("dm_med_count")
+    if isinstance(_real_drug, (int, float)) and _real_drug == _real_drug and _real_drug >= 0:
+        drug_before = int(_real_drug)
+    else:
+        drug_before = 1 if (sim_hba1c < 7.5 and baseline_sev < 0.5) else 2
+    _drug_inc = int(_clamp(baseline_sev * 1.5 + drift_worse * 1.5, 0, 4))
+    # v2.3.3 (codex): 방치 시나리오는 항상 증가 → drug_after ≥ drug_before 보장.
+    #   상한은 max(drug_before, 12) 로 잡아 drug_before 가 크면 그 값 밑으로 잘리지 않게 한다.
+    drug_after = min(drug_before + _drug_inc, max(drug_before, 12))
 
     # ── 질환별 전조증상 (방치 시 worsened 등급 기반) ──
     # 각 질환의 worsened 점수가 어느 등급(고/중/저위험)에 속하는지에 따라

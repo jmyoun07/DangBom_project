@@ -95,6 +95,7 @@ def apply_lightweight_migrations() -> None:
             "urine_sg":           "FLOAT",
             "sleep_hours":        "FLOAT",
             "dm_medication":      "INTEGER",
+            "dm_med_count":       "INTEGER",   # v2.3.3 병원 핵심 요청(당뇨약 개수)
             "insulin_medication": "INTEGER",
             "visceral_fat":       "FLOAT",
             # ── 파생 변수 컬럼 ──
@@ -282,6 +283,7 @@ class Patient(Base):
     dm_diagnosis_age = Column(Integer)
     dm_duration = Column(Integer)
     dm_medication = Column(Integer)         # 당뇨약 복용 여부 (미상=NULL, v2.3.0)
+    dm_med_count = Column(Integer)          # 당뇨약 개수 (병원 핵심 요청, v2.3.3) — 모델 미사용, 표시/시나리오용
     insulin_medication = Column(Integer)    # 인슐린 투약 여부 (미상=NULL, v2.3.0)
 
     # 기타 (모델에는 포함 안 되지만 병원에서 수집)

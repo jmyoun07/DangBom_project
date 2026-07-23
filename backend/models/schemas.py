@@ -82,6 +82,7 @@ class PatientBase(BaseModel):
     dm_diagnosis_age: Optional[int] = None
     dm_duration: Optional[int] = None
     dm_medication: Optional[int] = None
+    dm_med_count: Optional[int] = Field(None, ge=0, le=30)   # 당뇨약 개수 (병원 핵심 요청)
     insulin_medication: Optional[int] = None
 
     # ── 생활습관 ────────────────────────────────

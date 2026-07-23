@@ -370,6 +370,19 @@ def patient_to_features(patient_data: dict) -> dict:
         except (TypeError, ValueError):
             return np.nan
 
+    def _binary_yn(val):
+        """생활습관 여부 → 이진(0=안함, ≥1=함). 결측/비수치/비유한은 NaN(→imputer).
+        모델은 이진 학습이므로 병원 0~3 빈도 코드도 여기서 0/1 로 통일한다."""
+        if val is None:
+            return np.nan
+        try:
+            f = float(val)
+        except (TypeError, ValueError):
+            return np.nan
+        if not math.isfinite(f):
+            return np.nan
+        return 1.0 if f >= 1 else 0.0
+
     def _urine_raw(val):
         if val is None:
             return np.nan
@@ -469,9 +482,12 @@ def patient_to_features(patient_data: dict) -> dict:
 
         # === 생활습관 === (v2.1.3 Codex C1: 안전 변환)
         # v2.3.0 (감사): 결측 생활습관을 0('안 함')으로 단정하지 않고 NaN → imputer 위임.
-        "smoking":           _safe_num(d.get("smoking"), np.nan),
-        "drinking":          _safe_num(d.get("drinking"), np.nan),
-        "exercise":          _safe_num(d.get("exercise"), np.nan),
+        # v2.3.3: 모델은 이진(0/1) 학습(build_unified: source==1)인데 병원 drinking/exercise 는
+        #   0~3 빈도 코드 → '0=안함, ≥1=함'으로 이진화해 학습과 일치시킨다(원본은 DB에 그대로 저장).
+        #   smoking 은 병원도 0/1 이라 결과 동일하나 일관성 위해 같은 규칙 적용.
+        "smoking":           _binary_yn(d.get("smoking")),
+        "drinking":          _binary_yn(d.get("drinking")),
+        "exercise":          _binary_yn(d.get("exercise")),
         "sleep_7h":          sleep_7h,
     }
 

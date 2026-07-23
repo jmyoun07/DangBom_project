@@ -122,12 +122,13 @@ PATIENT_COLS: list[tuple[str, str]] = [
     ("dm_diagnosis_age",   "당뇨진단나이(세)"),
     ("dm_duration",        "당뇨이환기간(년)"),
     ("dm_medication",      "당뇨약 복용(0/1)"),
+    ("dm_med_count",       "당뇨약 개수"),
     ("insulin_medication", "인슐린 사용(0/1)"),
     # 과거력/생활습관
     ("hypertension",       "고혈압 진단(0/1)"),
     ("smoking",            "흡연(0/1)"),
-    ("drinking",           "음주(0/1)"),
-    ("exercise",           "운동(0/1)"),
+    ("drinking",           "음주(0~3)"),
+    ("exercise",           "운동(0~3)"),
     ("sleep_hours",        "수면시간(시간)"),
     # 소변 dipstick
     ("he_upro",            "단백뇨"),

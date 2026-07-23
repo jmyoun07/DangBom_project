@@ -574,7 +574,7 @@ def _recompute_derived(patient: Patient, *, preserve_bmi: bool = False) -> None:
         setattr(patient, f, v if v is not None else old_soft[f])  # 계산 가능시 갱신, 아니면 보존
 
 
-_LATEST_VISIT_MASTER_FIELDS = ("hba1c", "c_peptide", "cr", "bmi")
+_LATEST_VISIT_MASTER_FIELDS = ("hba1c", "c_peptide", "cr", "bmi", "dm_med_count")
 
 
 def sync_patient_from_latest_visit(

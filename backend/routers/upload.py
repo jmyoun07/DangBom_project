@@ -77,6 +77,19 @@ router = APIRouter(prefix="/api/v1", tags=["upload"])
 # 메타데이터 컬럼 (프로그램 운영용) — ML 알고리즘에는 사용 X
 META_FIELDS = {"name", "chart_no", "phone", "exam_date", "dob"}
 
+# v2.3.3: 병원 롱포맷 데이터셋의 '저장/사용하지 않는' 컬럼 — '미매핑 경고' 대신 정보성 안내.
+#   키는 _norm_key(소문자·공백제거) 기준. 값은 안내 메시지 템플릿({col}=원본 헤더).
+_KNOWN_IGNORED_COLS = {
+    "patient_id":         "'{col}' — 소스 식별키(차트번호로 환자 구분하므로 미사용).",
+    "visit_type":         "'{col}' — 초진/졸업 구분(검사일 순서로 자동 처리하므로 미사용).",
+    "dm_duration_months": "'{col}' — 유병기간(개월). 나이−진단나이로 자동 계산되어 미사용.",
+    "treatment_months":   "'{col}' — 한약 복용기간(졸업자 분석 소스값, 예측 미사용).",
+    "complication_code":  "'{col}' — 실제 진단 코드(모델은 합병증을 예측하므로 입력 미사용).",
+    "egfr":               "'{col}' — CKD-EPI 공식으로 자동 재계산됩니다(입력값 미사용).",
+    "tx_goal1":           "'{col}' — 치료 목표 메모(예측·저장 미사용).",
+    "tx_goal2":           "'{col}' — 치료 목표 메모(예측·저장 미사용).",
+}
+
 # CSV 컬럼 -> DB 필드 매핑
 # ML 독립변수 + 운영 메타데이터 모두 포함
 CSV_COLUMN_MAP = {
@@ -91,6 +104,7 @@ CSV_COLUMN_MAP = {
     "exam_date": "exam_date",
     "검사일": "exam_date",
     "최근검사일": "exam_date",
+    "visit_date": "exam_date",    # v2.3.3: 병원 롱포맷(초진/졸업) 검사일 — 없으면 방문 날짜 유실
     "dob": "dob",
     "생년월일": "dob",
 
@@ -105,6 +119,9 @@ CSV_COLUMN_MAP = {
     "당뇨약복용": "dm_medication",
     "insulin_medication": "insulin_medication",
     "인슐린투약": "insulin_medication",
+    "dm_med_count": "dm_med_count",   # v2.3.3: 당뇨약 개수 (병원 핵심 요청)
+    "당뇨약개수": "dm_med_count",
+    "당뇨약 개수": "dm_med_count",
 
     # 혈당·인슐린
     "HE_glu": "fbg",
@@ -567,6 +584,14 @@ async def upload_csv(
             })
             successes.append(f"'{csv_col}' → '{db_field}' ({kind}) 매핑 성공")
             column_lookup[csv_col] = db_field
+        elif _norm_key(csv_col) in _KNOWN_IGNORED_COLS:
+            # v2.3.3: 병원 롱포맷 소스 메타/파생 재계산 컬럼 — '미매핑 경고' 대신 정보성 안내.
+            #   (patient_id·visit_type=날짜순 자동처리, egfr·bmi=자동 재계산, 나머지=소스 참고값)
+            mapping_preview.append({
+                "csv_column": csv_col, "db_field": None,
+                "status": "ignored", "kind": None,
+            })
+            successes.append(_KNOWN_IGNORED_COLS[_norm_key(csv_col)].format(col=csv_col))
         else:
             mapping_preview.append({
                 "csv_column": csv_col,
@@ -937,8 +962,8 @@ def download_template():
     columns = [
         # 메타데이터 (dob 로부터 age 자동 산출)
         "name", "chart_no", "phone", "dob", "exam_date",
-        # 인구/당뇨
-        "sex", "DM_diagnosis_age", "dm_medication", "insulin_medication",
+        # 인구/당뇨 (dm_med_count = 당뇨약 개수)
+        "sex", "DM_diagnosis_age", "dm_medication", "dm_med_count", "insulin_medication",
         # 혈당·C-peptide
         "HE_glu", "HE_HbA1c", "c_peptide",
         # 간
@@ -960,7 +985,7 @@ def download_template():
     ]
     example = [
         "김영호", "CN-2026-0001", "010-1234-5678", "1962-03-15", "2026-04-10",
-        1, 52, 1, 0,
+        1, 52, 1, 2, 0,
         145.0, 7.8, 2.3,
         28, 32,
         1.1,

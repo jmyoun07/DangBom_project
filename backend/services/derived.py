@@ -55,19 +55,33 @@ CLINICAL_RANGES: dict[str, tuple[float, float]] = {
     "weight": (15.0, 350.0),
     "sleep_hours": (0.0, 24.0),
     "dm_diagnosis_age": (0.0, 120.0),
+    "dm_med_count": (0.0, 30.0),    # v2.3.3: 당뇨약 개수 (schema 동기화). 31+/inf 는 거부
     # 이진 플래그 (0/1) — 범위 밖 값은 결측 처리 (임의 해석 금지)
     "dm_medication": (0.0, 1.0),
     "insulin_medication": (0.0, 1.0),
     "hypertension": (0.0, 1.0),
     "smoking": (0.0, 1.0),
-    "drinking": (0.0, 1.0),
-    "exercise": (0.0, 1.0),
     "urine_nit": (0.0, 1.0),
+    # v2.3.3: drinking/exercise 는 병원이 0~3 빈도 코드로 수집(이진 아님) → 원본 저장.
+    #   단 모델은 이진(0/1) 학습이라 patient_to_features 에서 '0=안함, ≥1=함'으로 이진화한다.
+    "drinking": (0.0, 6.0),
+    "exercise": (0.0, 6.0),
 }
 
 # 정확히 0 또는 1 만 허용하는 이진 플래그 (0.5 같은 중간값 거부)
 BINARY_FIELDS: frozenset[str] = frozenset(
     {
+        "dm_medication", "insulin_medication", "hypertension",
+        "smoking", "urine_nit",
+    }
+)
+
+# DB Integer 컬럼 + 스키마 int 필드 — 저장 전 정수로 반올림해 조회 시 Pydantic int 검증 실패(500) 방지.
+#   v2.3.3 (codex): CSV 는 Pydantic 을 거치지 않으므로 float(2.5 등)가 Integer 컬럼에 들어가
+#   PatientDetail 응답 검증에서 500 이 났다. compute_derived 출력에서 일괄 정수화.
+INTEGER_FIELDS: frozenset[str] = frozenset(
+    {
+        "age", "dm_diagnosis_age", "dm_duration", "dm_med_count",
         "dm_medication", "insulin_medication", "hypertension",
         "smoking", "drinking", "exercise", "urine_nit",
     }
@@ -222,7 +236,7 @@ SNAPSHOT_FIELDS = [
     "he_upro", "he_uglu", "he_ubld", "urine_bil", "urine_uro",
     "urine_ket", "urine_nit", "urine_ph", "urine_sg",
     "smoking", "drinking", "exercise", "sleep_hours",
-    "dm_diagnosis_age", "dm_duration", "dm_medication", "insulin_medication",
+    "dm_diagnosis_age", "dm_duration", "dm_medication", "dm_med_count", "insulin_medication",
 ]
 
 
@@ -463,5 +477,18 @@ def compute_derived(data: dict) -> dict:
                 out["dm_duration"] = dur
         except Exception:
             pass
+
+    # v2.3.3 (codex): Integer 컬럼/스키마 int 필드는 정수로 반올림해 저장.
+    #   CSV 경로는 Pydantic 을 안 거쳐 float(2.5 등)가 들어갈 수 있고, 그대로 두면
+    #   PatientDetail 응답의 int 검증에서 500 이 난다. 유한하지 않으면 제거.
+    for _intf in INTEGER_FIELDS:
+        _v = out.get(_intf)
+        if _v is None:
+            continue
+        try:
+            _fv = float(_v)
+            out[_intf] = int(round(_fv)) if math.isfinite(_fv) else None
+        except (TypeError, ValueError):
+            out[_intf] = None
 
     return out
