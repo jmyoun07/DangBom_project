@@ -19,9 +19,10 @@ permissions:
 jobs:
   build:
     runs-on: windows-latest
-    # 첫 빌드: Rust 컴파일 9~10분 + PyInstaller 3분 + NSIS 7분 + WiX MSI 5~7분 = 25~30분
-    # 캐시 hit 후: 10~15분. v2.2.7: 런너웨이 빌드 방지 위해 마진 60분으로 축소.
-    timeout-minutes: 60
+    # 첫 빌드(캐시 없음): PyInstaller ~27분 + cargo tauri build(Rust cold) ~25분 + 기타 = ~55~70분.
+    #   v2.3.0: 첫 빌드가 60분에서 'Build Tauri' 도중 잘려(취소) 캐시 저장도 안 됨 → 90분으로 상향.
+    #   캐시 hit 후: 10~15분. tauri-cli 는 프리빌트 바이너리 설치로 ~18분 → ~1분 단축(아래).
+    timeout-minutes: 90
 
     steps:
       - name: Checkout
@@ -57,7 +58,11 @@ jobs:
           restore-keys: ${{ runner.os }}-cargo-
 
       - name: Install Tauri CLI
-        run: cargo install tauri-cli --version "^2.0" --locked
+        # v2.3.0: 소스 컴파일(cargo install, 캐시 없으면 ~18분) 대신 프리빌트 바이너리 설치(~1분).
+        #   비용·시간 절감 + cold 빌드가 60분에 잘리던 문제 완화. 설치 툴은 latest 2.x (기존 ^2.0 과 동일).
+        uses: taiki-e/install-action@v2
+        with:
+          tool: tauri-cli
 
       # 순서 주의: frontend dist 가 먼저 만들어져야 PyInstaller spec 이
       # frontend/dist 를 frontend_dist 리소스로 패키징할 수 있다.
