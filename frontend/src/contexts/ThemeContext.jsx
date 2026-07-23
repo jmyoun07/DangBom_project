@@ -2,6 +2,7 @@ import { createContext, useContext, useEffect, useState, useCallback } from 'rea
 
 const STORAGE_KEY = 'dbcare.settings.v1';
 
+// eslint-disable-next-line react-refresh/only-export-components
 export const DEFAULT_SETTINGS = {
   hospitalName: '',
   departmentName: '',
@@ -33,6 +34,7 @@ function hexToRgba(hex, a) {
   return `rgba(${parseInt(m[1], 16)}, ${parseInt(m[2], 16)}, ${parseInt(m[3], 16)}, ${a})`;
 }
 
+// eslint-disable-next-line react-refresh/only-export-components
 export function applyTheme(settings) {
   const root = document.documentElement;
   const accent = settings.accentColor || DEFAULT_SETTINGS.accentColor;
@@ -55,7 +57,7 @@ export function ThemeProvider({ children }) {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
       return raw ? { ...DEFAULT_SETTINGS, ...JSON.parse(raw) } : DEFAULT_SETTINGS;
-    } catch (e) {
+    } catch {
       return DEFAULT_SETTINGS;
     }
   });
@@ -76,12 +78,12 @@ export function ThemeProvider({ children }) {
     const value = next || settings;
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(value));
-    } catch (e) { /* noop */ }
+    } catch { /* noop */ }
   }, [settings]);
 
   const resetSettings = useCallback(() => {
     setSettingsState(DEFAULT_SETTINGS);
-    try { localStorage.removeItem(STORAGE_KEY); } catch (e) { /* noop */ }
+    try { localStorage.removeItem(STORAGE_KEY); } catch { /* noop */ }
   }, []);
 
   return (
@@ -91,6 +93,7 @@ export function ThemeProvider({ children }) {
   );
 }
 
+// eslint-disable-next-line react-refresh/only-export-components
 export function useTheme() {
   return useContext(ThemeContext);
 }

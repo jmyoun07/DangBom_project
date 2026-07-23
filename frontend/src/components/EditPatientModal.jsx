@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { X, Save, AlertCircle } from 'lucide-react';
-import api from '../api/client';
+import api, { errorMessage } from '../api/client';
 
 /**
  * 환자 데이터 수정 모달.
@@ -181,10 +181,10 @@ export default function EditPatientModal({ patient, onClose, onSaved }) {
     setSaving(true);
     setError(null);
     try {
-      // 빈 문자열은 null 처리, select number 변환
+      // 빈 문자열은 null 처리. NaN 은 JSON 직렬화 시 null 이 되어 값을 지워버리므로 방어적으로 null 처리.
       const payload = {};
       Object.entries(form).forEach(([k, v]) => {
-        if (v === '' || v === null || v === undefined) {
+        if (v === '' || v === null || v === undefined || (typeof v === 'number' && Number.isNaN(v))) {
           payload[k] = null;
         } else {
           payload[k] = v;
@@ -194,7 +194,8 @@ export default function EditPatientModal({ patient, onClose, onSaved }) {
       onSaved?.(res.data?.data);
       onClose?.();
     } catch (e) {
-      setError(e.response?.data?.detail || e.message || '저장 실패');
+      // 422 detail 은 객체 배열이라 그대로 렌더하면 React 가 크래시 → errorMessage 로 문자열화
+      setError(errorMessage(e, '저장 실패'));
     } finally {
       setSaving(false);
     }
@@ -251,7 +252,14 @@ export default function EditPatientModal({ patient, onClose, onSaved }) {
                       {f.type === 'select' ? (
                         <select
                           value={val}
-                          onChange={(e) => setField(f.key, e.target.value === '' ? '' : Number(e.target.value))}
+                          onChange={(e) => {
+                            // 옵션 원본 타입 유지: 숫자 옵션(0/1, dipstick)만 숫자로, 문자열 옵션('M'/'F')은 그대로.
+                            //   일괄 Number() 변환 시 Number('M') = NaN → 저장 시 성별이 지워지는 버그 방지.
+                            const raw = e.target.value;
+                            if (raw === '') { setField(f.key, ''); return; }
+                            const opt = f.options.find((o) => String(o.v) === raw);
+                            setField(f.key, opt ? opt.v : raw);
+                          }}
                           className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-accent"
                         >
                           <option value="">{'\uC120\uD0DD'}</option>
@@ -268,7 +276,8 @@ export default function EditPatientModal({ patient, onClose, onSaved }) {
                           onChange={(e) => {
                             const raw = e.target.value;
                             if (f.type === 'number') {
-                              setField(f.key, raw === '' ? '' : Number(raw));
+                              const n = Number(raw);
+                              setField(f.key, raw === '' || Number.isNaN(n) ? '' : n);
                             } else {
                               setField(f.key, raw);
                             }

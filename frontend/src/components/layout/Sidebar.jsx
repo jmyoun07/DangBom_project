@@ -2,12 +2,8 @@ import { useEffect, useState } from 'react';
 import { NavLink, useLocation, Link } from 'react-router-dom';
 import { Home, LayoutDashboard, Users, Activity, GitCompare, Settings, Clock, Lock, Menu, X } from 'lucide-react';
 import useRecentPatients from '../../hooks/useRecentPatients';
-
-// Extract patient ID from any of the per-patient routes
-function extractPatientId(pathname) {
-  const m = pathname.match(/^\/(?:dashboard|patients|risk-analysis|case-comparison)\/(\d+)/);
-  return m ? m[1] : null;
-}
+// 환자 라우트 정규식은 PatientContextBar 와 단일 소스 공유 (exam-history / report 포함)
+import { extractPatientId } from '../../utils/patientRoutes';
 
 // Relative-time formatter (Korean)
 function timeAgo(ts) {
@@ -30,6 +26,7 @@ export default function Sidebar() {
   const [mobileOpen, setMobileOpen] = useState(false);
 
   // 라우트 변경 시 모바일 메뉴 자동 닫기
+  // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => { setMobileOpen(false); }, [location.pathname]);
 
   // 모바일 오픈 시 Esc 로 닫기
@@ -146,6 +143,7 @@ export default function Sidebar() {
 
       {/* Menu */}
       <nav className="px-3 py-3 space-y-0.5" aria-label="\uc8fc \uba54\ub274">
+        {/* eslint-disable-next-line no-unused-vars -- Icon is consumed as a JSX element below; jsx-uses-vars rule is not enabled */}
         {menuItems.map(({ key, to, label, icon: Icon, isActive, disabledHint }) => {
           const active = isActive(location.pathname);
           const isDisabled = to === null;

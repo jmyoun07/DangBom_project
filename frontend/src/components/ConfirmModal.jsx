@@ -33,6 +33,7 @@ function FocusTrapModal({
   useEffect(() => {
     if (!open) return;
     previousFocus.current = document.activeElement;
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setConfirmInput('');
     const focusTarget = requireText ? inputRef.current : cancelRef.current;
     setTimeout(() => focusTarget?.focus(), 0);

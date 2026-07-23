@@ -27,29 +27,50 @@ from sqlalchemy.orm import Session
 import pandas as pd
 
 from models.database import get_db, Patient, MeasurementHistory
-from routers.patients import _backfill_risk_levels_bg
-from services.derived import compute_derived, normalize_sex
+from routers.patients import _backfill_risk_levels_bg, sync_patient_from_latest_visit
+from services.derived import (
+    CLINICAL_RANGES,
+    compute_derived,
+    normalize_sex,
+    sanitize_clinical_data,
+    validate_clinical_date,
+    visit_snapshot,
+)
+from ml.predictor import missing_required_fields  # v2.2.8: 필수 검사 누락 행 거부
+
+_TRACKED_VISIT_FIELDS = ("hba1c", "c_peptide", "cr", "bmi")
 
 
-def _append_measurement(db: Session, patient_id: int, pdata: dict) -> None:
+def _append_measurement(db: Session, patient_id: int, pdata: dict) -> MeasurementHistory | None:
     """
     기존 환자에 시계열 측정값을 누적 저장.
     C-peptide / HbA1c / Cr 3가지 핵심 추적 지표만 기록 (대시보드 차트와 일치).
     """
-    measured_at = pdata.get("exam_date") or date.today()
-    cp = pdata.get("c_peptide")
-    a1c = pdata.get("hba1c")
-    cr = pdata.get("cr")
-    # 3개 지표가 모두 없으면 측정 기록을 만들지 않음
-    if cp is None and a1c is None and cr is None:
-        return
-    db.add(MeasurementHistory(
+    clean, _ = sanitize_clinical_data(pdata)
+    measured_at, date_warning = validate_clinical_date(
+        pdata.get("exam_date"), field="exam_date"
+    )
+    if date_warning:
+        raise ValueError(date_warning)
+    measured_at = measured_at or date.today()
+    cp = clean.get("c_peptide")
+    a1c = clean.get("hba1c")
+    cr = clean.get("cr")
+    bmi = clean.get("bmi")
+    # 추적 지표(C-pep/HbA1c/Cr/BMI)가 모두 없으면 측정 기록을 만들지 않음
+    if cp is None and a1c is None and cr is None and bmi is None:
+        return None
+    measurement = MeasurementHistory(
         patient_id=patient_id,
         measured_at=measured_at,
         c_peptide=cp,
         hba1c=a1c,
         cr=cr,
-    ))
+        bmi=bmi,
+        snapshot=visit_snapshot(clean),  # 검증된 방문 입력만 보존
+    )
+    db.add(measurement)
+    return measurement
 
 router = APIRouter(prefix="/api/v1", tags=["upload"])
 
@@ -191,10 +212,29 @@ def _norm_key(s):
 
 _NORM_COLUMN_MAP = {_norm_key(k): v for k, v in CSV_COLUMN_MAP.items()}
 
+# v2.2.9 (#4): 백업 CSV(/patients/backup)는 raw DB 컬럼명을 헤더로 쓴다. 그 raw 명도 인식해야
+#   백업→(삭제)→복원 왕복이 가능하다. 단 파생/서버생성 컬럼은 재임포트 대상에서 제외(재계산됨).
+_DERIVED_META_COLS = {
+    "id", "upload_date", "risk_level", "he_insulin",
+    "egfr", "ldl_calc", "non_hdl", "homa_ir", "homa_beta",
+    "tyg_index", "bmi_homa_ir", "pulse_pressure",
+    # v2.2.9 (#4 후속): 백업 CSV 의 age/bmi/dm_duration 은 원자료(dob·키·몸무게·진단나이)로
+    #   재계산 위임 — 재임포트 시 stale 값 대신 compute_derived 가 다시 계산하게 한다.
+    "age", "bmi", "dm_duration",
+}
+_PATIENT_INPUT_KEY_TO_COL = {
+    _norm_key(c.name): c.name
+    for c in Patient.__table__.columns
+    if c.name not in _DERIVED_META_COLS
+}
+
 
 def _lookup_db_field(csv_col):
-    """원본 헤더 → DB 필드. 정확 매칭 우선, 없으면 공백류·대소문자 무시 정규화 매칭."""
-    return CSV_COLUMN_MAP.get(csv_col) or _NORM_COLUMN_MAP.get(_norm_key(csv_col))
+    """원본 헤더 → DB 필드. 정확 매칭 → 정규화 매칭 → 백업 raw 컬럼명 매칭."""
+    hit = CSV_COLUMN_MAP.get(csv_col) or _NORM_COLUMN_MAP.get(_norm_key(csv_col))
+    if hit:
+        return hit
+    return _PATIENT_INPUT_KEY_TO_COL.get(_norm_key(csv_col))
 
 
 def _dedup_cols(cols):
@@ -211,7 +251,7 @@ def _dedup_cols(cols):
     return out
 
 
-def _read_excel_robust(content: bytes, string_dtypes: dict):
+def _read_excel_robust(content: bytes):
     """비표준 xlsx 대응 엑셀 리더.
 
     일부 병원/외부 프로그램이 만든 xlsx 는 styles.xml 에 name 없는 cellStyle 이 있어
@@ -269,21 +309,24 @@ def _read_excel_robust(content: bytes, string_dtypes: dict):
     return df.reset_index(drop=True)
 
 
-def _read_csv_robust(content: bytes, string_dtypes: dict):
+def _read_csv_robust(content: bytes):
     """CSV 다중 인코딩 대응.
 
     한국 병원/엑셀이 'CSV 저장' 하면 UTF-8 이 아니라 CP949(=ANSI/EUC-KR) 인 경우가 흔하다.
     UTF-8 고정으로 읽으면 한글이 깨지거나 UnicodeDecodeError 가 난다. BOM 포함 UTF-8 →
     UTF-8 → CP949 → EUC-KR 순으로 시도한다. (latin-1 은 무조건 성공하지만 한글이 깨지므로 제외)
     """
+    # v2.3.0 (감사): dtype 을 특정 헤더명에만 지정하면 'Chart_No' 같은 표기 변형이
+    #   숫자로 파싱돼('001'→1.0) 차트번호 오귀속 위험 → 엑셀 경로와 동일하게 전 컬럼을
+    #   문자열로 읽고, 숫자 변환은 _coerce_numeric 단일 경로에 맡긴다.
     last_err = None
     for enc in ("utf-8-sig", "utf-8", "cp949", "euc-kr"):
         try:
-            df = pd.read_csv(io.BytesIO(content), dtype=string_dtypes, encoding=enc)
+            df = pd.read_csv(io.BytesIO(content), dtype=str, encoding=enc)
             # v2.2.4: 구분자 오감지 — 단일 컬럼인데 헤더에 ;/tab/| 가 있으면 자동 구분자 추론으로 재시도
             #   (한국 엑셀 로케일이 'CSV' 를 세미콜론으로 저장하는 흔한 케이스)
             if df.shape[1] == 1 and any(d in str(df.columns[0]) for d in (";", "\t", "|")):
-                df = pd.read_csv(io.BytesIO(content), dtype=string_dtypes, encoding=enc, sep=None, engine="python")
+                df = pd.read_csv(io.BytesIO(content), dtype=str, encoding=enc, sep=None, engine="python")
             return df
         except UnicodeDecodeError as e:
             last_err = e  # 인코딩 불일치 → 다음 인코딩
@@ -306,19 +349,11 @@ def _is_blank_cell(value) -> bool:
 
 
 def _parse_date(value):
-    """날짜 값을 date 객체로 변환. 실패 시 None.
-    엑셀은 날짜를 datetime 으로 자동 변환하므로 그 경우도 처리."""
+    """공용 날짜 정책으로 변환. 실패·미래·day=00이면 None."""
     if _is_blank_cell(value):
         return None
-    if isinstance(value, date) and not isinstance(value, datetime):
-        return value
-    if isinstance(value, datetime):
-        return value.date()
-    try:
-        parsed = pd.to_datetime(value)
-        return None if pd.isna(parsed) else parsed.date()
-    except Exception:
-        return None
+    parsed, _ = validate_clinical_date(value)
+    return parsed
 
 
 # 문자열 컬럼 (정규화 대상이 아님)
@@ -334,11 +369,14 @@ def _sanitize_cell(s: str) -> str:
     return s
 
 
-def _coerce_numeric(value):
+def _coerce_numeric(value, allow_time: bool = False):
     """병원 CSV 의 흔한 비-숫자 표기들을 float 으로 정규화.
 
     처리하는 패턴:
-      - HH:MM 시간 형식  ('7:30' → 7.5,  '8:15' → 8.25)
+      - HH:MM 시간 형식  ('7:30' → 7.5) — allow_time=True(수면시간 필드)일 때만.
+        v2.3.0 (감사): 이전엔 모든 숫자 필드에 적용되어 Cr '1:30'→1.5,
+        SBP '120:80'→121.33 같은 오변환이 정상 범위 검증까지 통과했다.
+        수면시간 외 필드의 ':' 표기는 해석 불가 → None (경고 대상).
       - 쉼표 천 단위 구분 ('1,200' → 1200)
       - % 단위 표기       ('7.5%' → 7.5)
       - 앞뒤 공백·전각 공백
@@ -358,8 +396,10 @@ def _coerce_numeric(value):
     # 끝에 단위/기호 (% u/l mg/dl 등) 가 붙어있으면 제거 — 첫 비숫자 위치까지만 사용
     if s.endswith("%"):
         s = s[:-1].strip()
-    # HH:MM (또는 HH:MM:SS) → 소수 시간
+    # HH:MM (또는 HH:MM:SS) → 소수 시간 — 수면시간 필드 전용 (allow_time)
     if ":" in s:
+        if not allow_time:
+            return None
         parts = s.split(":")
         try:
             nums = [float(p) for p in parts]
@@ -369,23 +409,32 @@ def _coerce_numeric(value):
                 return nums[0] + nums[1] / 60.0 + nums[2] / 3600.0
         except ValueError:
             return None
+        return None
     try:
         return float(s)
     except ValueError:
         return None
 
 
-def _row_to_patient_data(row, idx: int, column_lookup: dict) -> dict:
+def _row_to_patient_data(
+    row,
+    idx: int,
+    column_lookup: dict,
+    validation_warnings: list[str] | None = None,
+) -> dict | None:
     """CSV 한 행을 Patient 필드 dict 로 변환 (DB 접근 없음)."""
+    row_warnings = validation_warnings if validation_warnings is not None else []
     patient_data = {}
     for csv_col, db_field in column_lookup.items():
         val = row.get(csv_col)
         if _is_blank_cell(val):
             continue
         if db_field in ("exam_date", "dob"):
-            parsed = _parse_date(val)
-            if parsed is not None:
-                patient_data[db_field] = parsed
+            parsed, warning = validate_clinical_date(val, field=db_field)
+            if warning:
+                # 값이 있는 잘못된 날짜를 '미입력'으로 오인해 오늘로 바꾸지 않는다.
+                raise ValueError(warning)
+            patient_data[db_field] = parsed
         elif db_field in _STRING_FIELDS:
             # 이름/차트번호/연락처/성별은 문자열 (sex 코드 변환은 아래에서)
             # v2.1.9 (감사): formula injection 방어 sanitize 적용.
@@ -393,18 +442,21 @@ def _row_to_patient_data(row, idx: int, column_lookup: dict) -> dict:
             if s:
                 patient_data[db_field] = _sanitize_cell(s)
         else:
-            # 숫자 컬럼 — HH:MM 등 비-숫자 표기 정규화
-            num = _coerce_numeric(val)
+            # 숫자 컬럼 — 비-숫자 표기 정규화 (HH:MM 시간 해석은 수면시간에만 허용)
+            num = _coerce_numeric(val, allow_time=(db_field == "sleep_hours"))
             if num is not None:
                 patient_data[db_field] = num
+            elif db_field in CLINICAL_RANGES:
+                row_warnings.append(
+                    f"{db_field}: 숫자로 해석할 수 없는 값 {val!r}은 저장하지 않았습니다."
+                )
 
     # v2.2.4: 모든 셀이 빈 행 → ghost 환자(임상값 0) 생성 방지. None 반환 → 호출부에서 skip.
     if not patient_data:
         return None
 
-    # 이름 기본값
-    if not str(patient_data.get("name", "")).strip():
-        patient_data["name"] = f"환자_{idx + 1}"
+    # v2.2.9 (#9): name 기본값 주입을 여기서 하지 않는다 — 기존 환자 재방문 행(이름 없이 랩만)이
+    #   '환자_N' 기본값으로 실명을 덮어쓰던 문제 방지. 신규 환자 생성 시에만 기본값 부여(행 루프).
 
     # exam_date 기본값
     if "exam_date" not in patient_data:
@@ -416,11 +468,18 @@ def _row_to_patient_data(row, idx: int, column_lookup: dict) -> dict:
     if "sex" in patient_data:
         patient_data["sex"] = normalize_sex(patient_data.get("sex"))
 
+    # OCR/전사 오류는 파생 계산 전에 제거해 eGFR/HOMA/LDL 등에 전파되지 않게 한다.
+    patient_data, raw_warnings = sanitize_clinical_data(patient_data)
+    row_warnings.extend(raw_warnings)
+
     # ── 파생 지표 일괄 계산 (services/derived.py 의 단일 소스) ──
     # age (DOB→자동), BMI, LDL(병원 실측 우선), LDL_calc, non_HDL,
     # HE_insulin 호환값, HOMA_IR/HOMA_beta/BMI_HOMA_IR (C-peptide 기반),
     # TyG_index, eGFR, pulse_pressure, DM_duration
     patient_data = compute_derived(patient_data)
+    # 키/몸무게나 지질에서 새로 계산된 BMI/LDL도 같은 저장 범위를 통과해야 한다.
+    patient_data, derived_warnings = sanitize_clinical_data(patient_data)
+    row_warnings.extend(derived_warnings)
 
     return patient_data
 
@@ -457,14 +516,9 @@ async def upload_csv(
     if not content:
         raise HTTPException(status_code=400, detail="빈 파일입니다.")
 
-    # 차트번호/연락처/성별은 숫자로 오인되지 않게 문자열로 보존
-    # (예: 차트번호 "001" 이 1.0 으로 바뀌는 것 방지). 원본 컬럼명(영문/한글) 모두 지정.
-    string_dtypes = {
-        "name": "string", "이름": "string",
-        "chart_no": "string", "차트번호": "string",
-        "phone": "string", "연락처": "string", "전화번호": "string",
-        "sex": "string", "성별": "string",
-    }
+    # v2.3.0 (감사): CSV·엑셀 모두 전 컬럼을 문자열로 읽는다. 헤더명 화이트리스트로
+    #   dtype 을 지정하면 'Chart_No' 같은 표기 변형이 숫자로 파싱돼 차트번호 "001" 이
+    #   1 로 바뀌고 다른 환자에 귀속될 수 있었다. 숫자 변환은 _coerce_numeric 단일 경로.
     # v2.2.4: 내용 기반 포맷 판별 (확장자 위장 대응).
     #   PK = xlsx/xlsm/ods(zip), D0 CF 11 E0 = 구형 .xls(OLE2 compound).
     looks_zip = content[:2] == b"PK"
@@ -475,9 +529,9 @@ async def upload_csv(
     file_label = "엑셀" if use_excel else "CSV"
     try:
         if use_excel:
-            df = _read_excel_robust(content, string_dtypes)
+            df = _read_excel_robust(content)
         else:
-            df = _read_csv_robust(content, string_dtypes)  # v2.2.4: 다중 인코딩(UTF-8/CP949/EUC-KR)
+            df = _read_csv_robust(content)  # v2.2.4: 다중 인코딩(UTF-8/CP949/EUC-KR)
     except Exception as e:
         raise HTTPException(
             status_code=400,
@@ -572,26 +626,60 @@ async def upload_csv(
 
     # ── 3) 행 변환 (DB 접근 없음) ─────────────────────────
     rows_data = []
+    conversion_skips: list[dict] = []
     empty_rows = 0
     for idx, row in df.iterrows():
+        row_chart_no = ""
+        for csv_col, db_field in column_lookup.items():
+            if db_field == "chart_no" and not _is_blank_cell(row.get(csv_col)):
+                row_chart_no = str(row.get(csv_col)).strip()
+                break
         try:
-            pdata = _row_to_patient_data(row, idx, column_lookup)
+            row_validation_warnings: list[str] = []
+            pdata = _row_to_patient_data(
+                row, idx, column_lookup, validation_warnings=row_validation_warnings
+            )
+            warnings.extend(f"행 {idx + 1}: {msg}" for msg in row_validation_warnings)
             if pdata is None:  # v2.2.4: 빈 행 skip (ghost 환자 방지)
                 empty_rows += 1
                 continue
             rows_data.append((idx, pdata))
         except Exception as e:
-            warnings.append(f"행 {idx + 1}: 변환 실패 - {str(e)}")
+            reason = f"변환 실패 - {str(e)}"
+            warnings.append(f"행 {idx + 1}: {reason}")
+            conversion_skips.append({"row": idx + 1, "chart_no": row_chart_no, "reason": reason})
     if empty_rows:
         warnings.append(f"빈 행 {empty_rows}개를 건너뛰었습니다.")
+    if not rows_data:
+        rejected_detail = "; ".join(
+            f"행 {item['row']}: {item['reason']}" for item in conversion_skips[:5]
+        )
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "저장 가능한 데이터 행이 없습니다. "
+                + (rejected_detail or "날짜·임상값 검증 경고를 확인해 주세요.")
+            ),
+        )
 
     # ── 4) 자동 chart_no 생성 (DB count 루프 밖에서 1회) ─
-    existing_total = db.query(Patient).count()
-    auto_counter = existing_total
+    # v2.2.9 (#2): COUNT 기반은 환자 삭제 후 기존 CN-YYYY-NNNN 과 충돌 → unique 위반으로 배치 전량 실패.
+    #   같은 연도 자동번호의 MAX suffix 를 찾아 그 다음부터 부여한다.
+    year = datetime.now().year
+    prefix = f"CN-{year}-"
+    max_suffix = 0
+    for (cn,) in db.query(Patient.chart_no).filter(Patient.chart_no.like(f"{prefix}%")).all():
+        try:
+            n = int(str(cn).rsplit("-", 1)[-1])
+            if n > max_suffix:
+                max_suffix = n
+        except (ValueError, IndexError):
+            pass
+    auto_counter = max_suffix
     for idx, pdata in rows_data:
         if not str(pdata.get("chart_no", "")).strip():
             auto_counter += 1
-            pdata["chart_no"] = f"CN-{datetime.now().year}-{auto_counter:04d}"
+            pdata["chart_no"] = f"{prefix}{auto_counter:04d}"
 
     # ── 5) 기존 chart_no 일괄 조회 ───────────────────────
     chart_nos = [str(pdata["chart_no"]) for _, pdata in rows_data if pdata.get("chart_no")]
@@ -607,6 +695,7 @@ async def upload_csv(
 
     # 기존 환자의 이미 기록된 (patient_id, exam_date) 조합 — 완전 중복 방문 판정용
     existing_visit_keys: set[tuple[int, date]] = set()
+    latest_visit_dates: dict[int, date] = {}
     if existing_map:
         pid_list = [p.id for p in existing_map.values()]
         for i in range(0, len(pid_list), 500):
@@ -615,33 +704,56 @@ async def upload_csv(
                        .filter(MeasurementHistory.patient_id.in_(batch)).all()
             for v in visits:
                 existing_visit_keys.add((v[0], v[1]))
+                if (
+                    v[1] is not None
+                    and v[1] <= date.today()
+                    and (v[0] not in latest_visit_dates or v[1] > latest_visit_dates[v[0]])
+                ):
+                    latest_visit_dates[v[0]] = v[1]
 
     # ── 6) 행별 처리 ─────────────────────────────────────
     created_ids: list[int] = []           # 새로 만든 환자 id (순서 보존)
     updated_ids: list[int] = []           # 기존 환자인데 최신 방문 덮어쓴 id
     affected_ids: set[int] = set()        # 영향받은 고유 환자 id (리다이렉트 판정용)
     visits_added = 0                       # MeasurementHistory 에 새로 추가된 행 수
-    skipped: list[dict] = []              # [{row, chart_no, reason}]
+    skipped: list[dict] = list(conversion_skips)  # [{row, chart_no, reason}]
 
     # CSV 파일 내에서 같은 (chart_no, exam_date) 조합 두 번 등장 방지
     seen_in_file: set[tuple[str, date]] = set()
 
     # ㄴ 루프 전 정렬: 같은 chart_no 여러 행이 있을 때 exam_date 오름차순으로 처리
     #   → 최신 방문이 마지막에 반영되어 Patient.exam_date 가 가장 최신으로 남음
+    # v2.3.0 (감사): 같은 (chart_no, exam_date) 안에서는 **필수값이 완전한 행을 먼저** 처리한다.
+    #   같은 방문에 불완전 행과 완전 행이 함께 오면 먼저 처리된 쪽이 그 방문을 차지하므로,
+    #   순서에 따라 완전한 검사 결과가 통째로 폐기되던 문제를 막는다.
+    _incomplete_rows = {
+        idx: bool(missing_required_fields(pdata)) for idx, pdata in rows_data
+    }
+
     def _row_sort_key(item):
-        _, pdata = item
+        idx, pdata = item
         d = pdata.get("exam_date") or date(1900, 1, 1)
-        return (str(pdata.get("chart_no", "")), d)
+        return (str(pdata.get("chart_no", "")), d, _incomplete_rows.get(idx, False), idx)
     rows_data.sort(key=_row_sort_key)
 
     for idx, pdata in rows_data:
         chart_no = str(pdata.get("chart_no", "")).strip()
         exam_date_val = pdata.get("exam_date")
         if not isinstance(exam_date_val, date):
-            exam_date_val = _parse_date(exam_date_val) or date.today()
+            exam_date_val, date_warning = validate_clinical_date(exam_date_val, field="exam_date")
+            if date_warning:
+                skipped.append({
+                    "row": idx + 1, "chart_no": chart_no, "reason": date_warning,
+                })
+                continue
+            # 여기까지 None이면 원본에 날짜가 없었던 경우뿐이며 기존 정책대로 오늘을 사용한다.
+            exam_date_val = exam_date_val or date.today()
             pdata["exam_date"] = exam_date_val
 
         # 같은 파일 안에서 (chart_no + exam_date) 중복 방지
+        # v2.3.0 (감사): '처리 성공한' 행만 seen_in_file 에 넣는다. 이전엔 검증 전에 등록해
+        #   같은 방문의 첫 행이 필수값 누락으로 미저장돼도 두 번째(완전한) 행이
+        #   '파일 내 중복'으로 폐기되어 결국 아무것도 저장되지 않았다.
         file_key = (chart_no, exam_date_val)
         if file_key in seen_in_file:
             skipped.append({
@@ -649,64 +761,145 @@ async def upload_csv(
                 "reason": f"파일 내 동일 방문({exam_date_val}) 중복",
             })
             continue
-        seen_in_file.add(file_key)
 
-        existing = existing_map.get(chart_no)
-        try:
-            if existing is None:
-                # 신규 환자 + 첫 방문
-                patient = Patient(**pdata)
-                db.add(patient)
-                db.flush()  # id 확보
-                existing_map[chart_no] = patient  # 같은 파일 뒤 행들이 참조
-                created_ids.append(patient.id)
-                affected_ids.add(patient.id)
-                _append_measurement(db, patient.id, pdata)
-                visits_added += 1
-                existing_visit_keys.add((patient.id, exam_date_val))
-            else:
-                # 기존 환자 — 같은 exam_date 방문 이미 존재하면 skip
-                if (existing.id, exam_date_val) in existing_visit_keys:
+        # v2.2.8 (병원 정책): 필수 임상값이 하나라도 없는 행은 예측/Patient 갱신 대상이 아니다(추정 금지).
+        _missing = missing_required_fields(pdata)
+        if _missing:
+            # 단, 기존 환자의 부분 재방문에 핵심 추적지표가 있으면 이력에 보존한다.
+            # 루프 종료 후 sync가 최신 방문의 실측값만 Patient에 반영하고 risk도 다시 계산한다.
+            _existing = existing_map.get(chart_no)
+            _has_track = any(pdata.get(k) is not None for k in _TRACKED_VISIT_FIELDS)
+            if _existing is not None and _has_track and (_existing.id, exam_date_val) not in existing_visit_keys:
+                try:
+                    with db.begin_nested():
+                        _append_measurement(db, _existing.id, pdata)
+                    visits_added += 1
+                    seen_in_file.add(file_key)
+                    existing_visit_keys.add((_existing.id, exam_date_val))
+                    if exam_date_val >= latest_visit_dates.get(_existing.id, date.min):
+                        latest_visit_dates[_existing.id] = exam_date_val
+                    affected_ids.add(_existing.id)
                     skipped.append({
                         "row": idx + 1, "chart_no": chart_no,
-                        "reason": f"동일 검사일({exam_date_val}) 데이터 이미 존재",
+                        "reason": (
+                            f"필수 검사 누락({', '.join(_missing)}) — 부분 방문 저장, "
+                            "최신 실측값 동기화 및 위험도 재계산 예약 "
+                            "(미측정 항목은 이전 방문 값과 결합되어 계산됩니다)"
+                        ),
                     })
-                    continue
+                except Exception as e:
+                    skipped.append({"row": idx + 1, "chart_no": chart_no, "reason": f"필수 누락 + 이력 저장 실패: {e}"})
+            else:
+                skipped.append({
+                    "row": idx + 1, "chart_no": chart_no,
+                    "reason": f"필수 검사 누락({', '.join(_missing)}) — 미저장",
+                })
+            continue
 
-                # 새 방문 → history 에 추가
-                _append_measurement(db, existing.id, pdata)
+        existing = existing_map.get(chart_no)
+        # v2.2.9 (#2): SAVEPOINT '안'에서는 DB 변경만, 카운터/맵 갱신은 성공 확정 '후'에만 반영한다.
+        #   (SAVEPOINT 가 롤백되면 파이썬 카운터가 과다계상되어 '신규 N명' 이 실제보다 많던 문제 차단)
+        outcome = None          # 'new' | 'visit' | 'dup'
+        new_patient = None
+        did_update = False
+        try:
+            # 행 단위 SAVEPOINT — 한 행의 flush 실패(예: unique 위반)가 세션을 PendingRollbackError
+            #   로 오염시켜 배치 전량이 최종 commit 에서 500 되던 문제 차단.
+            with db.begin_nested():
+                if existing is None:
+                    # 신규 환자 + 첫 방문. v2.2.9 (#9): name 기본값은 신규 생성 시에만 부여.
+                    if not str(pdata.get("name", "")).strip():
+                        pdata["name"] = f"환자_{idx + 1}"
+                    patient = Patient(**pdata)
+                    db.add(patient)
+                    db.flush()  # id 확보
+                    _append_measurement(db, patient.id, pdata)
+                    new_patient = patient
+                    outcome = "new"
+                else:
+                    # 기존 환자 — 같은 exam_date 방문 이미 존재하면 skip
+                    if (existing.id, exam_date_val) in existing_visit_keys:
+                        outcome = "dup"
+                    else:
+                        # 새 방문 → history 에 추가
+                        _append_measurement(db, existing.id, pdata)
+                        # 최신 방문이면 비핵심 입력만 반영한다. 핵심 4값/exam_date는 최종 sync 전용.
+                        current_exam = latest_visit_dates.get(existing.id)
+                        if current_exam is None or exam_date_val >= current_exam:
+                            for k, v in pdata.items():
+                                if k in {*_TRACKED_VISIT_FIELDS, "exam_date", "risk_level"}:
+                                    continue
+                                if v is not None and hasattr(existing, k):
+                                    setattr(existing, k, v)
+                            existing.risk_level = None  # 재계산 필요
+                            did_update = True
+                        # else: 과거 방문 소급 입력 — history 에만 추가, Patient row 보존
+                        outcome = "visit"
+
+            # ── SAVEPOINT 정상 통과 후에만 파이썬 카운터/맵 반영 (실패 시 여기 도달 안 함) ──
+            seen_in_file.add(file_key)  # v2.3.0: 처리 확정된 행만 파일 내 중복 기준으로 등록
+            if outcome == "new":
+                existing_map[chart_no] = new_patient  # 같은 파일 뒤 행들이 참조
+                created_ids.append(new_patient.id)
+                affected_ids.add(new_patient.id)
+                visits_added += 1
+                existing_visit_keys.add((new_patient.id, exam_date_val))
+                latest_visit_dates[new_patient.id] = exam_date_val
+            elif outcome == "dup":
+                skipped.append({
+                    "row": idx + 1, "chart_no": chart_no,
+                    "reason": f"동일 검사일({exam_date_val}) 데이터 이미 존재",
+                })
+            elif outcome == "visit":
                 visits_added += 1
                 existing_visit_keys.add((existing.id, exam_date_val))
+                if exam_date_val >= latest_visit_dates.get(existing.id, date.min):
+                    latest_visit_dates[existing.id] = exam_date_val
                 affected_ids.add(existing.id)
-
-                # 최신 방문이면 Patient row 도 최신값으로 갱신 (대시보드 표시 기준)
-                current_exam = existing.exam_date
-                if current_exam is None or exam_date_val >= current_exam:
-                    for k, v in pdata.items():
-                        setattr(existing, k, v)
-                    existing.risk_level = None  # 재계산 필요
-                    if existing.id not in updated_ids:
-                        updated_ids.append(existing.id)
-                # else: 과거 방문 소급 입력 — history 에만 추가, Patient row 보존
+                if did_update and existing.id not in updated_ids:
+                    updated_ids.append(existing.id)
         except Exception as e:
             warnings.append(f"행 {idx + 1} (chart_no={chart_no}): 저장 실패 - {str(e)}")
 
-    # 단일 commit — 3000행도 수 초 내
+    # 환자별 한 번만 최신 방문을 동기화해 같은 파일의 다중 방문에서도 최종 최신행만 권위값이 된다.
     try:
+        db.flush()
+        patients_by_id = {
+            patient.id: patient
+            for patient in existing_map.values()
+            if patient.id is not None
+        }
+        created_id_set = set(created_ids)
+        for patient_id in sorted(affected_ids):
+            patient = patients_by_id.get(patient_id)
+            if patient is None:
+                patient = db.query(Patient).filter(Patient.id == patient_id).first()
+            if patient is None:
+                continue
+            changed = sync_patient_from_latest_visit(db, patient, recompute_risk=False)
+            if changed and patient_id not in created_id_set and patient_id not in updated_ids:
+                updated_ids.append(patient_id)
         db.commit()
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=f"DB 커밋 실패: {str(e)}")
 
-    # ── 7) ML risk_level 은 백그라운드 처리 ───────────────
-    pending_ids = list({*created_ids, *updated_ids})
-    if pending_ids:
-        background.add_task(_backfill_risk_levels_bg, pending_ids)
+    # ML은 SQLite write transaction 밖에서 환자별 1회 계산해 대량 업로드 잠금/지연을 피한다.
+    if affected_ids:
+        background.add_task(_backfill_risk_levels_bg, sorted(affected_ids))
 
     # 영향받은 고유 환자 1명 → 프론트에서 대시보드로 직행
     unique_patients = len(affected_ids)
     is_single_patient = unique_patients == 1
     last_patient_id = next(iter(affected_ids)) if is_single_patient else None
+
+    # v2.3.0 (감사): 전 행이 건너뛰어져 실제 저장이 0건인데 '성공'으로만 보이던 문제 —
+    #   errors 에 명시해 업로드 결과 패널에서 바로 인지되게 한다 (응답 형태는 유지).
+    if not created_ids and not updated_ids and visits_added == 0:
+        errors.append(
+            "저장된 데이터가 없습니다 — 모든 행이 건너뛰어졌습니다. "
+            "아래 건너뛴 행 사유를 확인해 주세요."
+        )
 
     return {
         "data": {

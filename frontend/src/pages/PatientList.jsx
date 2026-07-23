@@ -1,11 +1,15 @@
-import { useState, useEffect, useMemo, useRef } from 'react';
+import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
-import { Search, ChevronLeft, ChevronRight, SlidersHorizontal, Phone, X, LayoutDashboard, Activity, GitCompare } from 'lucide-react';
-import api from '../api/client';
+import { Search, ChevronLeft, ChevronRight, ChevronUp, ChevronDown, ChevronsUpDown, SlidersHorizontal, Phone, X, LayoutDashboard, Activity, GitCompare, Trash2 } from 'lucide-react';
+import api, { errorMessage } from '../api/client';
 import RiskBadge from '../components/RiskBadge';
 import EmptyState from '../components/EmptyState';
 import usePatientCount from '../hooks/usePatientCount';
+import { removeRecentPatient } from '../hooks/useRecentPatients';
+import { invalidatePatientContextCache } from '../components/layout/PatientContextBar';
 import { prodSafeError } from '../theme';
+import { useToast } from '../contexts/ToastContext';
+import { useConfirm } from '../contexts/ConfirmContext';
 
 /**
  * 동적 페이지 윈도우 — 현재 페이지 주변 5개만 표시, 앞뒤는 "..." 처리.
@@ -30,34 +34,72 @@ function paginationWindow(page, totalPages, windowSize = 5) {
 
 const initialFilters = { sex: '', examFrom: '', examTo: '', minAge: '', maxAge: '' };
 
+// 위험도 정렬 가중치 (고>중>저). 모듈 레벨 상수 → 안정 참조(useMemo deps 불필요).
+const RISK_ORDER = { '고위험': 3, '중위험': 2, '저위험': 1 };
+
+const readPageParam = (params) => {
+  const n = parseInt(params.get('page') || '1', 10);
+  return Number.isFinite(n) && n > 0 ? n : 1;
+};
+
+// 항목4: 클릭 정렬 가능한 테이블 헤더 셀.
+function SortableTh({ label, sortKey, sortBy, sortOrder, onSort }) {
+  const active = sortBy === sortKey;
+  const Icon = !active ? ChevronsUpDown : sortOrder === 'asc' ? ChevronUp : ChevronDown;
+  return (
+    <th className="text-left text-[11px] font-semibold text-gray-500 uppercase tracking-wider px-5 py-3">
+      <button
+        type="button"
+        onClick={() => onSort(sortKey)}
+        className={`inline-flex items-center gap-1 uppercase tracking-wider hover:text-accent transition-colors ${active ? 'text-accent' : ''}`}
+      >
+        {label}
+        <Icon size={12} className={active ? 'text-accent' : 'text-gray-300'} />
+      </button>
+    </th>
+  );
+}
+
 export default function PatientList() {
   const navigate = useNavigate();
-  const { count, loading: countLoading } = usePatientCount();
+  const toast = useToast();
+  const confirm = useConfirm();
+  const { count, loading: countLoading, error: countError, refetch: refetchCount } = usePatientCount();
   const [patients, setPatients] = useState([]);
   const [total, setTotal] = useState(0);
   // v2.1.2 — page/search/risk_level 을 URL search param 으로 동기화.
   // 환자 카드 클릭 → 대시보드 → 뒤로가기 시 마지막 페이지로 복원되도록.
   const [searchParams, setSearchParams] = useSearchParams();
-  const [page, setPageState] = useState(() => parseInt(searchParams.get('page') || '1', 10) || 1);
+  const [page, setPageState] = useState(() => readPageParam(searchParams));
   const [size] = useState(8);
   const [search, setSearchState] = useState(() => searchParams.get('search') || '');
   const [riskLevel, setRiskLevelState] = useState(() => searchParams.get('risk') || '');
 
-  // 상태 변경 시 URL 도 함께 갱신 (replace 가 아니라 push — back 으로 복원 가능)
-  const setPage = (next) => {
-    const v = typeof next === 'function' ? next(page) : next;
+  // 상태 변경 시 URL 도 함께 갱신 (replace 가 아니라 push — back 으로 복원 가능).
+  // pageRef 로 최신 page 추적 → functional setPage 의 stale closure 방지.
+  const pageRef = useRef(page);
+  useEffect(() => { pageRef.current = page; }, [page]);
+  const setPage = useCallback((next, { replace = false } = {}) => {
+    const v = Math.max(1, typeof next === 'function' ? next(pageRef.current) : next);
+    pageRef.current = v;
     setPageState(v);
-    const sp = new URLSearchParams(searchParams);
-    if (v <= 1) sp.delete('page'); else sp.set('page', String(v));
-    setSearchParams(sp, { replace: false });
-  };
-  const setSearch = (v) => {
+    setSearchParams((prev) => {
+      const sp = new URLSearchParams(prev);
+      if (v <= 1) sp.delete('page'); else sp.set('page', String(v));
+      return sp;
+    }, { replace });
+  }, [setSearchParams]);
+  // v2.2.9 (#7): functional setSearchParams + useCallback 으로 안정 참조화.
+  //   (렌더마다 재생성되며 searchParams 스냅샷을 캡처하면 키보드 단축키 effect 가 stale closure 로 동작)
+  const setSearch = useCallback((v) => {
     setSearchState(v);
-    const sp = new URLSearchParams(searchParams);
-    if (!v) sp.delete('search'); else sp.set('search', v);
-    sp.delete('page');
-    setSearchParams(sp, { replace: false });
-  };
+    setSearchParams((prev) => {
+      const sp = new URLSearchParams(prev);
+      if (!v) sp.delete('search'); else sp.set('search', v);
+      sp.delete('page');
+      return sp;
+    }, { replace: false });
+  }, [setSearchParams]);
   const setRiskLevel = (v) => {
     setRiskLevelState(v);
     const sp = new URLSearchParams(searchParams);
@@ -65,10 +107,64 @@ export default function PatientList() {
     sp.delete('page');
     setSearchParams(sp, { replace: false });
   };
+  // 항목4: 정렬 상태 (URL 동기화 → 뒤로가기 시 정렬도 복원).
+  const [sortBy, setSortByState] = useState(() => searchParams.get('sort') || '');
+  const [sortOrder, setSortOrderState] = useState(() => searchParams.get('order') || 'asc');
+  const setSort = (key) => {
+    let nextBy = key, nextOrder = 'asc';
+    if (sortBy === key) {
+      if (sortOrder === 'asc') nextOrder = 'desc';
+      else { nextBy = ''; nextOrder = 'asc'; }  // 3번째 클릭 → 정렬 해제
+    }
+    setSortByState(nextBy);
+    setSortOrderState(nextOrder);
+    const sp = new URLSearchParams(searchParams);
+    if (!nextBy) { sp.delete('sort'); sp.delete('order'); }
+    else { sp.set('sort', nextBy); sp.set('order', nextOrder); }
+    setSearchParams(sp, { replace: false });
+  };
+
+  // URL(searchParams) → state 재동기화: 브라우저 뒤로/앞으로 시 page·검색·정렬 복원.
+  //   (3페이지에서 상세 진입 후 뒤로가기 → 3페이지로 복원)
+  useEffect(() => {
+    setPageState(readPageParam(searchParams));
+    setSearchState(searchParams.get('search') || '');
+    setRiskLevelState(searchParams.get('risk') || '');
+    setSortByState(searchParams.get('sort') || '');
+    setSortOrderState(searchParams.get('order') || 'asc');
+  }, [searchParams]);
   const [loading, setLoading] = useState(true);
   const [filterOpen, setFilterOpen] = useState(false);
   const [filters, setFilters] = useState(initialFilters);
   const searchRef = useRef(null);
+  const [refreshTick, setRefreshTick] = useState(0);
+
+  // 개별 환자 삭제 — 확인 후 DELETE /patients/{id} (검사이력·감사로그 함께 삭제됨).
+  const handleDelete = async (p, e) => {
+    e?.stopPropagation();
+    const ok = await confirm({
+      title: '환자 삭제',
+      message: `'${p.name}' (${p.chart_no}) 환자의 모든 데이터(검사 이력 포함)를 삭제합니다.\n되돌릴 수 없습니다.`,
+      tone: 'danger',
+      confirmLabel: '삭제',
+      cancelLabel: '취소',
+    });
+    if (!ok) return;
+    try {
+      await api.delete(`/patients/${p.id}`);
+      setPatients((list) => list.filter((x) => x.id !== p.id));  // 목록에서 즉시 제거
+      // 삭제된 환자의 잔존 흔적 정리: 최근 환자 목록 + PatientContextBar 캐시
+      //   (캐시는 notify:false — 삭제된 환자를 다시 GET 해서 404 나는 것 방지)
+      removeRecentPatient(p.id);
+      invalidatePatientContextCache(p.id, { notify: false });
+      toast.success(`'${p.name}' 환자가 삭제되었습니다.`, { title: '삭제 완료' });
+      setRefreshTick((t) => t + 1);  // 목록 서버 재조회
+      refetchCount();                // 전체 환자 수 갱신 (마지막 환자 삭제 시 빈 상태 반영)
+    } catch (err) {
+      prodSafeError('PatientList.delete')(err);
+      toast.error(errorMessage(err, '삭제 중 오류가 발생했습니다. 다시 시도해주세요.'), { title: '삭제 실패' });
+    }
+  };
 
   useEffect(() => {
     if (countLoading || count === 0) return;
@@ -76,8 +172,10 @@ export default function PatientList() {
       const fetch = async () => {
         setLoading(true);
         try {
-          // Backend doesn't support advanced filters yet; fetch a wider page and post-filter client-side.
-          const params = { page: 1, size: 100 };
+          // Backend doesn't support advanced filters yet; fetch the full set and post-filter/paginate client-side.
+          // v2.2.8: size 를 전체 환자 수에 맞춰 조회 → 1706명 중 100명만 보이던 문제 + total 오류 해소.
+          //   (장기적으로는 정렬/고급필터까지 서버사이드 페이징으로 옮기는 것이 정석)
+          const params = { page: 1, size: Math.min(Math.max(count || 200, 200), 5000) };
           if (search) params.search = search;
           if (riskLevel) params.risk_level = riskLevel;
           const res = await api.get('/patients', { params });
@@ -91,7 +189,7 @@ export default function PatientList() {
       fetch();
     }, 250);
     return () => clearTimeout(t);
-  }, [search, riskLevel, count, countLoading]);
+  }, [search, riskLevel, count, countLoading, refreshTick]);
 
   // Client-side advanced filtering
   const filtered = useMemo(() => {
@@ -106,9 +204,44 @@ export default function PatientList() {
     });
   }, [patients, filters]);
 
-  // Update total + slice for current page
-  useEffect(() => { setTotal(filtered.length); setPage(1); }, [filtered.length]);
-  const visible = filtered.slice((page - 1) * size, page * size);
+  // 항목4: 정렬 (필터 후, 페이지 슬라이스 전). 위험도는 의미순(고>중>저, RISK_ORDER 모듈 상수).
+  const sorted = useMemo(() => {
+    if (!sortBy) return filtered;
+    const dir = sortOrder === 'desc' ? -1 : 1;
+    const arr = [...filtered];
+    arr.sort((a, b) => {
+      switch (sortBy) {
+        case 'name': return dir * (a.name || '').localeCompare(b.name || '', 'ko-KR');
+        case 'chart_no': return dir * (a.chart_no || '').localeCompare(b.chart_no || '', 'ko-KR');
+        case 'sex': return dir * (a.sex || '').localeCompare(b.sex || '');
+        case 'age': return dir * ((a.age ?? -Infinity) - (b.age ?? -Infinity));
+        case 'exam_date': return dir * (new Date(a.exam_date || a.upload_date || 0) - new Date(b.exam_date || b.upload_date || 0));
+        case 'risk_level': return dir * ((RISK_ORDER[a.risk_level] || 0) - (RISK_ORDER[b.risk_level] || 0));
+        default: return 0;
+      }
+    });
+    return arr;
+  }, [filtered, sortBy, sortOrder]);
+
+  // 고급 필터(성별/나이/검사일 — 로컬 상태, URL 미반영)가 바뀌면 1페이지로 리셋.
+  //   검색/위험도는 setSearch/setRiskLevel 이 URL 의 page 를 지우고 위 재동기화 effect 가
+  //   page=1 로 복원하므로 여기서 제외 (재동기화와 중복/충돌 방지 → 뒤로가기 복원 안정).
+  const filtersSig = JSON.stringify(filters);
+  const prevFiltersRef = useRef(filtersSig);
+  useEffect(() => { setTotal(filtered.length); }, [filtered.length]);
+  useEffect(() => {
+    if (prevFiltersRef.current !== filtersSig) {
+      prevFiltersRef.current = filtersSig;
+      setPage(1);
+    }
+  }, [filtersSig]);  // eslint-disable-line react-hooks/exhaustive-deps
+  // 복원된 page 가 데이터 범위를 벗어나면(로드 완료 후) 클램프 (history 오염 방지 위해 replace).
+  useEffect(() => {
+    const tp = Math.ceil(filtered.length / size) || 1;
+    if (!loading && page > tp) setPage(tp, { replace: true });
+  }, [loading, filtered.length, page, size]);  // eslint-disable-line react-hooks/exhaustive-deps
+
+  const visible = sorted.slice((page - 1) * size, page * size);
   const totalPages = Math.ceil(total / size) || 1;
   const startIdx = total === 0 ? 0 : (page - 1) * size + 1;
   const endIdx = Math.min(page * size, total);
@@ -122,6 +255,8 @@ export default function PatientList() {
       const tag = (e.target?.tagName || '').toUpperCase();
       const typing = tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA' || e.target?.isContentEditable;
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') return; // palette owns this
+      // v2.2.9 (#24): 모달(Confirm/편집 등)이 열려 있으면 목록 단축키 무시 (모달 조작과 충돌 방지)
+      if (document.querySelector('[role="dialog"]')) return;
       if (e.key === '/' && !typing) {
         e.preventDefault();
         searchRef.current?.focus();
@@ -135,7 +270,8 @@ export default function PatientList() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [totalPages]);
+    // setPage/setSearch 는 useCallback 안정 참조 (deps 포함해도 재구독 없음).
+  }, [totalPages, setPage, setSearch]);
 
   const formatPhone = (raw) => {
     if (!raw) return '\u2014';
@@ -153,6 +289,15 @@ export default function PatientList() {
     );
   }
 
+  // v2.2.9 (#7): \uC11C\uBC84 \uC5F0\uACB0 \uC624\uB958\uB97C '\uD658\uC790 \uC5C6\uC74C'\uACFC \uAD6C\uBD84\uD574 \uD45C\uC2DC (\uC7AC\uC5C5\uB85C\uB4DC \uC624\uC778 \uBC29\uC9C0).
+  if (!countLoading && countError) {
+    return (
+      <EmptyState
+        title={'\uC11C\uBC84\uC5D0 \uC5F0\uACB0\uD560 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4'}
+        message={'\uBC31\uC5D4\uB4DC \uC751\uB2F5\uC774 \uC5C6\uC2B5\uB2C8\uB2E4. \uB370\uC774\uD130\uAC00 \uC0AC\uB77C\uC9C4 \uAC83\uC774 \uC544\uB2C8\uBA70, \uC7A0\uC2DC \uD6C4 \uC0C8\uB85C\uACE0\uCE68\uD574 \uC8FC\uC138\uC694.'}
+      />
+    );
+  }
   if (count === 0) {
     return (
       <EmptyState
@@ -179,7 +324,7 @@ export default function PatientList() {
               type="text"
               placeholder={'\uC774\uB984, \uCC28\uD2B8\uBC88\uD638 \uB610\uB294 \uC5F0\uB77D\uCC98\uB85C \uAC80\uC0C9... ( / \uD0A4\uB85C \uD3EC\uCEE4\uC2A4)'}
               value={search}
-              onChange={(e) => { setSearch(e.target.value); setPage(1); }}
+              onChange={(e) => setSearch(e.target.value)}
               className="w-full pl-9 pr-9 py-2 border border-gray-200 rounded-lg text-sm accent-input"
             />
             {search && (
@@ -194,7 +339,7 @@ export default function PatientList() {
           </div>
           <select
             value={riskLevel}
-            onChange={(e) => { setRiskLevel(e.target.value); setPage(1); }}
+            onChange={(e) => setRiskLevel(e.target.value)}
             className="px-3 py-2 border border-gray-200 rounded-lg text-sm accent-input"
           >
             <option value="">{'\uC804\uCCB4 \uC704\uD5D8\uB3C4'}</option>
@@ -293,13 +438,13 @@ export default function PatientList() {
         <table className="w-full">
           <thead className="bg-gray-50/80 border-b border-gray-100">
             <tr>
-              <th className="text-left text-[11px] font-semibold text-gray-500 uppercase tracking-wider px-5 py-3">{'\uC774\uB984'}</th>
-              <th className="text-left text-[11px] font-semibold text-gray-500 uppercase tracking-wider px-5 py-3">{'\uCC28\uD2B8\uBC88\uD638'}</th>
-              <th className="text-left text-[11px] font-semibold text-gray-500 uppercase tracking-wider px-5 py-3">{'\uB098\uC774'}</th>
-              <th className="text-left text-[11px] font-semibold text-gray-500 uppercase tracking-wider px-5 py-3">{'\uC131\uBCC4'}</th>
+              <SortableTh label={'\uC774\uB984'} sortKey="name" sortBy={sortBy} sortOrder={sortOrder} onSort={setSort} />
+              <SortableTh label={'\uCC28\uD2B8\uBC88\uD638'} sortKey="chart_no" sortBy={sortBy} sortOrder={sortOrder} onSort={setSort} />
+              <SortableTh label={'\uB098\uC774'} sortKey="age" sortBy={sortBy} sortOrder={sortOrder} onSort={setSort} />
+              <SortableTh label={'\uC131\uBCC4'} sortKey="sex" sortBy={sortBy} sortOrder={sortOrder} onSort={setSort} />
               <th className="text-left text-[11px] font-semibold text-gray-500 uppercase tracking-wider px-5 py-3">{'\uC5F0\uB77D\uCC98'}</th>
-              <th className="text-left text-[11px] font-semibold text-gray-500 uppercase tracking-wider px-5 py-3">{'\uCD5C\uADFC \uAC80\uC0AC\uC77C'}</th>
-              <th className="text-left text-[11px] font-semibold text-gray-500 uppercase tracking-wider px-5 py-3">{'\uC704\uD5D8\uB3C4'}</th>
+              <SortableTh label={'\uCD5C\uADFC \uAC80\uC0AC\uC77C'} sortKey="exam_date" sortBy={sortBy} sortOrder={sortOrder} onSort={setSort} />
+              <SortableTh label={'\uC704\uD5D8\uB3C4'} sortKey="risk_level" sortBy={sortBy} sortOrder={sortOrder} onSort={setSort} />
               <th className="text-right text-[11px] font-semibold text-gray-500 uppercase tracking-wider px-5 py-3">{'\uAD00\uB9AC'}</th>
             </tr>
           </thead>
@@ -382,6 +527,14 @@ export default function PatientList() {
                         >
                           <GitCompare size={14} />
                         </Link>
+                        <button
+                          type="button"
+                          onClick={(e) => handleDelete(p, e)}
+                          title="환자 삭제"
+                          className="p-1.5 rounded-md text-gray-400 hover:bg-red-50 hover:text-red-600 transition-colors"
+                        >
+                          <Trash2 size={14} />
+                        </button>
                         <Link
                           to={`/patients/${p.id}`}
                           className="ml-1 text-xs text-accent font-medium hover:underline whitespace-nowrap"

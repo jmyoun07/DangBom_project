@@ -13,7 +13,7 @@ function read() {
 }
 
 function write(list) {
-  try { localStorage.setItem(KEY, JSON.stringify(list)); } catch {}
+  try { localStorage.setItem(KEY, JSON.stringify(list)); } catch { /* 무시 */ }
 }
 
 // External subscribers (so mutations in one page update Sidebar live)
@@ -33,6 +33,17 @@ export function pushRecentPatient(p) {
   const list = read().filter((x) => x.id !== p.id);
   list.unshift(entry);
   write(list.slice(0, MAX));
+  notify();
+}
+
+// 삭제된 환자를 '최근 환자' 목록에서 제거 (없는 환자로 이동하는 죽은 링크 방지)
+export function removeRecentPatient(patientId) {
+  if (patientId == null) return;
+  const target = String(patientId);
+  const list = read();
+  const next = list.filter((x) => String(x.id) !== target);
+  if (next.length === list.length) return;
+  write(next);
   notify();
 }
 

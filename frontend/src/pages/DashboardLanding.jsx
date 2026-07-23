@@ -7,13 +7,23 @@ import EmptyState from '../components/EmptyState';
  * - patient count > 0  → "환자를 선택하세요" prompt with link to PatientList
  */
 export default function DashboardLanding() {
-  const { count, loading } = usePatientCount();
+  const { count, loading, error } = usePatientCount();
 
   if (loading) {
     return (
       <div className="flex-1 flex items-center justify-center">
         <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-accent" />
       </div>
+    );
+  }
+
+  // v2.2.9 (#7): 서버 오류(count=null)를 '등록된 null명'/'0명'으로 오표시하지 않는다.
+  if (error || count == null) {
+    return (
+      <EmptyState
+        title={'서버에 연결할 수 없습니다'}
+        message={'백엔드 응답이 없습니다. 데이터가 사라진 것이 아니며, 잠시 후 새로고침해 주세요.'}
+      />
     );
   }
 

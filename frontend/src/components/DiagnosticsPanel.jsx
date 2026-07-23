@@ -1,6 +1,6 @@
-import { useState, useCallback } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { CheckCircle2, XCircle, RefreshCw, FolderOpen, FileSpreadsheet, AlertCircle, Activity, Cpu, HardDrive, Database } from 'lucide-react';
-import api from '../api/client';
+import api, { errorMessage } from '../api/client';
 import { useToast } from '../contexts/ToastContext';
 import { prodSafeError } from '../theme';
 
@@ -39,7 +39,7 @@ export default function DiagnosticsPanel() {
       setData(res.data?.data || null);
     } catch (e) {
       prodSafeError('Diagnostics.fetch')(e);
-      toast.error('환경 점검 실패: ' + (e.response?.data?.detail || e.message));
+      toast.error('환경 점검 실패: ' + errorMessage(e));
     } finally {
       setLoading(false);
     }
@@ -49,7 +49,7 @@ export default function DiagnosticsPanel() {
     try {
       const res = await api.get('/export/folder');
       setExportPath(res.data?.data?.path);
-    } catch (e) { /* noop */ }
+    } catch { /* noop */ }
   }, []);
 
   const openFolder = async () => {
@@ -61,7 +61,7 @@ export default function DiagnosticsPanel() {
         toast.info(`데스크탑 모드가 아닙니다. 경로: ${res.data?.data?.path}`);
       }
     } catch (e) {
-      toast.error('폴더 열기 실패: ' + (e.response?.data?.detail || e.message));
+      toast.error('폴더 열기 실패: ' + errorMessage(e));
     }
   };
 
@@ -72,14 +72,15 @@ export default function DiagnosticsPanel() {
       const n = res.data?.data?.patients ?? 0;
       toast.success(`${n}명의 환자 데이터를 CSV 로 다시 내보냈습니다.`);
     } catch (e) {
-      toast.error('CSV 재생성 실패: ' + (e.response?.data?.detail || e.message));
+      toast.error('CSV 재생성 실패: ' + errorMessage(e));
     } finally {
       setRefreshing(false);
     }
   };
 
   // 첫 마운트 시 경로만 미리 fetch (점검은 사용자가 버튼 클릭 시)
-  useState(() => { fetchExportPath(); return null; });
+  //   렌더 중 사이드이펙트(useState initializer 악용) → useEffect 로 이동
+  useEffect(() => { fetchExportPath(); }, [fetchExportPath]);
 
   return (
     <div className="space-y-5">

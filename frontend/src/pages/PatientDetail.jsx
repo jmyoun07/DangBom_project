@@ -1,57 +1,48 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
-import { ChevronLeft, ArrowRight, Activity, Pencil, GitCompare, AlertTriangle, RefreshCw, Info } from 'lucide-react';
-import api from '../api/client';
-import RiskBadge from '../components/RiskBadge';
-import RiskBar from '../components/RiskBar';
+import { ChevronLeft, ArrowRight, Activity, Pencil, GitCompare, AlertTriangle, RefreshCw, Info, Printer } from 'lucide-react';
+import api, { errorMessage } from '../api/client';
+import RiskCard from '../components/RiskCard';
 import TrendChart from '../components/TrendChart';
 import EditPatientModal from '../components/EditPatientModal';
 import PatientAuditCard from '../components/PatientAuditCard';
 import { invalidatePatientContextCache } from '../components/layout/PatientContextBar';
 import {
   UNITS,
-  REFERENCE_RANGES,
   AVAILABLE_DISEASE_KEYS,
+  REFERENCE_RANGES,
+  scoreToLevel,
+  riskColorFor,
   prodSafeError,
+  sexKo,
 } from '../theme';
+import {
+  complicationCards, modelNameMap, diseaseCardMetric,
+  riskFactors, riskPct, calcEGFR, buildFactorVal, buildRiskFactorVal,
+} from '../utils/riskDisplay';
 
-// ── \uD55C\uC758\uC6D0 \uAC80\uC0AC 14\uAC1C \uD56D\uBAA9 \uC815\uC758 ──────────────────────────────
-// v2.1.2 — \uC815\uC0C1\uBC94\uC704 \uC784\uC0C1 \uAE30\uC900 \uAC31\uC2E0:
-//   HDL 40-75 / C-peptide 1.0-3.5 / GGT 0-66 / ALT 0-45 / AST 0-40
-//   Cr 0.5-1.3 / CHOL 120-230 / Trig 0-200 / LDL 0-130
-//   BMI: <19 \uC800\uCCB4\uC911 / 19-22.9 \uC815\uC0C1 / 23-24.9 \uACFC\uCCB4\uC911 / >=25 \uBE44\uB9CC
+// ── 한의원 검사 14개 항목 정의 ──────────────────────────────
+// v2.2.9 — 참고값/판정 기준의 단일 소스는 theme.js 의 REFERENCE_RANGES.
+//   (중성지방 ≤149 정상, LDL ≤129 정상, BMI 저체중 컷 18.5 등 표준 기준으로 정정.
+//    GGT ≤50 / ALT ≤40 / AST ≤40 / Cr 0.6–1.2 — 코드 기준과 주석 일치)
 const LAB_ITEMS_LEFT = [
-  { key: 'hba1c', name: '\uB2F9\uD654\uD608\uC0C9\uC18C (HbA1c)', unit: UNITS.hba1c, range: '<= 5.6 \uC815\uC0C1 / 5.7-6.4 \uC8FC\uC758 / >= 6.5 \uB2F9\uB1E8',
-    evaluate: (v) => v == null ? '' : v <= 5.6 ? '\uC815\uC0C1' : v <= 6.4 ? '\uC8FC\uC758' : '\uB192\uC74C' },
-  { key: 'c_peptide', name: 'C-peptide', unit: UNITS.cpeptide, range: '1.0 - 3.5 ng/mL',
-    evaluate: (v) => v == null ? '' : (v >= 1.0 && v <= 3.5) ? '\uC815\uC0C1' : v < 1.0 ? '\uB0AE\uC74C' : '\uB192\uC74C' },
-  { key: 'fbg', name: '\uACF5\uBCF5\uD608\uB2F9', unit: UNITS.glucose, range: '70-99 \uC815\uC0C1 / 100-125 \uC8FC\uC758 / >=126 \uB2F9\uB1E8',
-    evaluate: (v) => v == null ? '' : v <= 99 ? '\uC815\uC0C1' : v <= 125 ? '\uC8FC\uC758' : '\uB192\uC74C' },
-  { key: 'ggt', name: 'GGT', unit: UNITS.ggt, range: '<= 50 U/L',
-    evaluate: (v) => v == null ? '' : v <= 50 ? '\uC815\uC0C1' : '\uB192\uC74C' },
-  { key: 'alt', name: 'ALT', unit: UNITS.alt, range: '<= 40 U/L',
-    evaluate: (v) => v == null ? '' : v <= 40 ? '\uC815\uC0C1' : '\uB192\uC74C' },
-  { key: 'ast', name: 'AST', unit: UNITS.ast, range: '0 - 40 U/L',
-    evaluate: (v) => v == null ? '' : v <= 40 ? '\uC815\uC0C1' : '\uB192\uC74C' },
-  { key: 'cr', name: 'Cr (\uD06C\uB808\uC544\uD2F0\uB2CC)', unit: UNITS.cr, range: '0.6 - 1.2 mg/dL',
-    evaluate: (v) => v == null ? '' : (v >= 0.6 && v <= 1.2) ? '\uC815\uC0C1' : v < 0.6 ? '\uB0AE\uC74C' : '\uB192\uC74C' },
+  { key: 'hba1c', name: '당화혈색소 (HbA1c)', unit: UNITS.hba1c, ref: REFERENCE_RANGES.hba1c },
+  { key: 'c_peptide', name: 'C-peptide', unit: UNITS.cpeptide, ref: REFERENCE_RANGES.c_peptide },
+  { key: 'fbg', name: '공복혈당', unit: UNITS.glucose, ref: REFERENCE_RANGES.glucose },
+  { key: 'ggt', name: 'GGT', unit: UNITS.ggt, ref: REFERENCE_RANGES.ggt },
+  { key: 'alt', name: 'ALT', unit: UNITS.alt, ref: REFERENCE_RANGES.alt },
+  { key: 'ast', name: 'AST', unit: UNITS.ast, ref: REFERENCE_RANGES.ast },
+  { key: 'cr', name: 'Cr (크레아티닌)', unit: UNITS.cr, ref: REFERENCE_RANGES.cr },
 ];
 
 const LAB_ITEMS_RIGHT = [
-  { key: 'total_cholesterol', name: '\uCD1D\uCF5C\uB808\uC2A4\uD14C\uB864', unit: UNITS.cholesterol, range: '<= 199 / 200-239 / >= 240 mg/dL',
-    evaluate: (v) => v == null ? '' : v <= 199 ? '\uC815\uC0C1' : v <= 239 ? '\uC8FC\uC758' : '\uB192\uC74C' },
-  { key: 'triglycerides', name: '\uC911\uC131\uC9C0\uBC29', unit: UNITS.triglyceride, range: '0 - 200 mg/dL',
-    evaluate: (v) => v == null ? '' : v <= 200 ? '\uC815\uC0C1' : '\uB192\uC74C' },
-  { key: 'hdl', name: 'HDL \uCF5C\uB808\uC2A4\uD14C\uB864', unit: UNITS.hdl, range: '>= 60 / 40-59 / < 40 mg/dL',
-    evaluate: (v) => v == null ? '' : v >= 60 ? '\uC815\uC0C1' : v >= 40 ? '\uC8FC\uC758' : '\uB0AE\uC74C' },
-  { key: 'ldl', name: 'LDL \uCF5C\uB808\uC2A4\uD14C\uB864', unit: UNITS.ldl, range: '0 - 130 mg/dL',
-    evaluate: (v) => v == null ? '' : v <= 130 ? '\uC815\uC0C1' : '\uB192\uC74C' },
-  { key: 'sbp', name: '\uC218\uCD95\uAE30\uD608\uC555', unit: UNITS.bp, range: '<=119 \uC815\uC0C1 / 120-139 \uC8FC\uC758 / >=140 \uB192\uC74C',
-    evaluate: (v) => v == null ? '' : v <= 119 ? '\uC815\uC0C1' : v <= 139 ? '\uC8FC\uC758' : '\uB192\uC74C' },
-  { key: 'dbp', name: '\uC774\uC644\uAE30\uD608\uC555', unit: UNITS.bp, range: '<=79 \uC815\uC0C1 / 80-89 \uC8FC\uC758 / >=90 \uB192\uC74C',
-    evaluate: (v) => v == null ? '' : v <= 79 ? '\uC815\uC0C1' : v <= 89 ? '\uC8FC\uC758' : '\uB192\uC74C' },
-  { key: 'bmi', name: '\uCCB4\uC9C8\uB7C9\uC9C0\uC218 (BMI)', unit: UNITS.bmi, range: '<19 \uC800\uCCB4\uC911 / 19-22.9 \uC815\uC0C1 / 23-24.9 \uACFC\uCCB4\uC911 / >=25 \uBE44\uB9CC',
-    evaluate: (v) => v == null ? '' : v < 19 ? '\uC800\uCCB4\uC911' : v <= 22.9 ? '\uC815\uC0C1' : v <= 24.9 ? '\uACFC\uCCB4\uC911' : '\uBE44\uB9CC' },
+  { key: 'total_cholesterol', name: '총콜레스테롤', unit: UNITS.cholesterol, ref: REFERENCE_RANGES.cholesterol },
+  { key: 'triglycerides', name: '중성지방', unit: UNITS.triglyceride, ref: REFERENCE_RANGES.triglyceride },
+  { key: 'hdl', name: 'HDL 콜레스테롤', unit: UNITS.hdl, ref: REFERENCE_RANGES.hdl },
+  { key: 'ldl', name: 'LDL 콜레스테롤', unit: UNITS.ldl, ref: REFERENCE_RANGES.ldl },
+  { key: 'sbp', name: '수축기혈압', unit: UNITS.bp, ref: REFERENCE_RANGES.sbp },
+  { key: 'dbp', name: '이완기혈압', unit: UNITS.bp, ref: REFERENCE_RANGES.dbp },
+  { key: 'bmi', name: '체질량지수 (BMI)', unit: UNITS.bmi, ref: REFERENCE_RANGES.bmi },
 ];
 
 const RESULT_COLOR = {
@@ -65,13 +56,14 @@ const RESULT_COLOR = {
   '\uBE44\uB9CC':   'text-red-600',
 };
 function LabRow({ item, value }) {
-  const result = item.evaluate(value);
+  const result = item.ref?.evaluate ? item.ref.evaluate(value) : '';
+  const rangeText = item.ref?.text || '';
   return (
     <tr className="border-b border-gray-50 group">
       <td className="py-2 text-xs text-gray-700">
-        <span className="inline-flex items-center gap-1" title={item.range || ''}>
+        <span className="inline-flex items-center gap-1" title={rangeText}>
           {item.name}
-          {item.range && (
+          {rangeText && (
             <Info size={11} className="text-gray-300 group-hover:text-gray-400 transition-colors" aria-hidden="true" />
           )}
         </span>
@@ -118,20 +110,39 @@ export default function PatientDetail() {
   // N2: 환자 수정 후 audit 카드 재조회 트리거
   const [auditRefreshKey, setAuditRefreshKey] = useState(0);
 
+  // 응답 레이스 가드 — 환자 빠르게 전환 시 이전 요청의 늦은 응답이 새 환자 화면을 덮지 않도록.
+  //   (CaseComparison 의 cancelled 플래그와 동일 목적. onSaved 재호출도 있어 seq 방식 사용)
+  const loadSeqRef = useRef(0);
+  const predSeqRef = useRef(0);
+
+  // patientId 변경 시 이전 환자 잔존 상태 초기화 —
+  //   초기화 없이는 '새 환자 정보 + 이전 환자 예측' 이 한 화면에 같이 보일 수 있다.
+  useEffect(() => {
+    setPatient(null);
+    setMeasurements([]);
+    setPredictions(null);
+    setPredError(null);
+    setLoading(true);
+  }, [id]);
+
   // ── 환자 기본 정보 로드 (페이지 진입 / id 변경 시) ────────
   const loadPatient = useCallback(async () => {
+    const seq = ++loadSeqRef.current;
+    const stale = () => seq !== loadSeqRef.current;
     try {
       setLoading(true);
       const patRes = await api.get(`/patients/${id}`);
+      if (stale()) return;
       const d = patRes.data.data;
       const pat = d.patient || d;
       setPatient(pat);
       setMeasurements(d.measurements || []);
     } catch (e) {
+      if (stale()) return;
       prodSafeError('loadPatient')(e);
       setPatient(null);
     } finally {
-      setLoading(false);
+      if (!stale()) setLoading(false);
     }
   }, [id]);
 
@@ -141,14 +152,26 @@ export default function PatientDetail() {
   // 환자 객체가 준비된 뒤, 캐시 키가 바뀔 때(=편집으로 updated_at 갱신)만 재호출.
   const cacheKey = useMemo(() => predKey(patient), [patient]);
 
+  // I21: onSaved 가 이전 렌더의 runPrediction 클로저를 직접 호출하면 POST /predict 가 중복 실행됨
+  //   → ref 에 '다음 예측은 강제' 플래그만 남기고, loadPatient 후 effect 재실행이 최신 키로 예측하게 한다.
+  const forceNextPredRef = useRef(false);
+
   const runPrediction = useCallback(async ({ force = false } = {}) => {
     if (!patient || !cacheKey) return;
-    if (!force) {
+    if (String(patient.id) !== String(id)) return; // 환자 전환 직후 이전 환자 객체로 예측 방지
+    const useForce = force || forceNextPredRef.current;
+    forceNextPredRef.current = false;
+    // seq 증가를 캐시 조회보다 먼저 — 캐시 적중으로 early return 하더라도 이전 환자의
+    //   in-flight 응답이 stale 판정을 받아 새 캐시 결과를 덮어쓰지 못하게 한다.
+    const seq = ++predSeqRef.current;
+    const stale = () => seq !== predSeqRef.current;
+    if (!useForce) {
       try {
         const cached = sessionStorage.getItem(cacheKey);
         if (cached) {
           setPredictions(JSON.parse(cached));
           setPredError(null);
+          setPredLoading(false);
           return;
         }
       } catch { /* storage disabled — ignore */ }
@@ -157,24 +180,28 @@ export default function PatientDetail() {
       setPredLoading(true);
       setPredError(null);
       const pred = await fetchPrediction(id);
+      if (stale()) return;
       setPredictions(pred);
       try { sessionStorage.setItem(cacheKey, JSON.stringify(pred)); } catch { /* quota — ignore */ }
     } catch (e) {
+      if (stale()) return;
       prodSafeError('predict')(e);
-      setPredError(e?.response?.data?.detail || '\uC608\uCE21 \uC11C\ubc84\uc5d0 \uc811\uc18d\ud560 \uc218 \uc5c6\uc2b5\ub2c8\ub2e4.');
+      setPredError(errorMessage(e, '예측 서버에 접속할 수 없습니다.'));
     } finally {
-      setPredLoading(false);
+      if (!stale()) setPredLoading(false);
     }
   }, [patient, cacheKey, id]);
 
   useEffect(() => { runPrediction(); }, [runPrediction]);
 
   // ── 편집 완료 → 환자 재로드 + 예측 강제 갱신 ─────────────
+  //   I21: 이전 렌더 클로저의 runPrediction({force}) 직접 호출 제거 — loadPatient 후 patient/cacheKey 가
+  //   갱신되면 effect 가 최신 클로저로 재예측한다 (forceNextPredRef 로 캐시 무시 보장, POST 중복 방지).
   const onSaved = async (updated) => {
     if (updated) setPatient((prev) => ({ ...prev, ...updated }));
     invalidatePatientContextCache(id);  // I1: PatientContextBar 캐시 무효화
-    await loadPatient();                // 최신 updated_at 반영
-    await runPrediction({ force: true }); // 예측 강제 재호출
+    forceNextPredRef.current = true;    // 다음 예측은 세션 캐시 무시하고 강제 재호출
+    await loadPatient();                // 최신 updated_at 반영 → effect 가 재예측
     setAuditRefreshKey((k) => k + 1);   // N2: 수정 이력 카드 재조회
   };
 
@@ -203,28 +230,20 @@ export default function PatientDetail() {
     );
   }
 
-  const cpeptideData = measurements.map(m => ({
-    month: new Date(m.measured_at).toLocaleDateString('ko-KR', { year: '2-digit', month: 'short' }),
-    value: m.c_peptide,
-  }));
-  const hba1cData = measurements.map(m => ({
-    month: new Date(m.measured_at).toLocaleDateString('ko-KR', { year: '2-digit', month: 'short' }),
-    value: m.hba1c,
-  }));
-  const crData = measurements.map(m => ({
-    month: new Date(m.measured_at).toLocaleDateString('ko-KR', { year: '2-digit', month: 'short' }),
-    value: m.cr,
-  }));
+  // 병원 피드백: 차트 X축을 '24년 1월'이 아니라 '24.01.02' 정확한 날짜로.
+  const ymd = (v) => {
+    const d = new Date(v);
+    return `${String(d.getFullYear()).slice(2)}.${String(d.getMonth() + 1).padStart(2, '0')}.${String(d.getDate()).padStart(2, '0')}`;
+  };
+  const cpeptideData = measurements.map(m => ({ month: ymd(m.measured_at), value: m.c_peptide }));
+  const hba1cData = measurements.map(m => ({ month: ymd(m.measured_at), value: m.hba1c }));
+  const crData = measurements.map(m => ({ month: ymd(m.measured_at), value: m.cr }));
 
-  // v2.1.7 \u2014 6\uAC1C \uBAA8\uB378 \uD1B5\uD569. \uC2E0\uADDC 3\uAC1C\uB294 usage_warning \uC73C\uB85C SCREENING/PROTOTYPE \uACBD\uACE0 \uD45C\uC2DC.
-  const completedModels = [
-    { key: 'kidney_disease',   metaKey: 'kidney',   name: '\uB2F9\uB1E8\uBCD1\uC131 \uC2E0\uC7A5\uC9C8\uD658' },
-    { key: 'retinopathy',      metaKey: 'retina',   name: '\uB2F9\uB1E8\uBCD1\uC131 \uB9DD\uB9C9\uBCD1\uC99D' },
-    { key: 'cardiovascular',   metaKey: 'cardio',   name: '\uB2F9\uB1E8\uBCD1\uC131 \uC2EC\uD608\uAD00 \uC9C8\uD658' },
-    { key: 'neuropathy',       metaKey: 'neuro',    name: '\uB2F9\uB1E8\uBCD1\uC131 \uC2E0\uACBD\uBCD1\uC99D' },
-    { key: 'dementia',         metaKey: 'dementia', name: '\uB2F9\uB1E8\uBCD1\uC131 \uCE58\uB9E4' },
-    { key: 'cerebrovascular',  metaKey: 'cerebro',  name: '\uB2F9\uB1E8\uBCD1\uC131 \uB1CC\uD608\uAD00 \uC9C8\uD658' },
-  ];
+  // 합병증 1순위 요인 카드 + 주요 위험 요인 정리 패널용 (대시보드에서 이동, 병원 6/13)
+  const egfr = (patient.egfr != null && patient.egfr !== '') ? Math.round(patient.egfr) : calcEGFR(patient.cr, patient.age, patient.sex);
+  const factorVal = buildFactorVal(patient, egfr);
+  const riskFactorVal = buildRiskFactorVal(patient, egfr);
+
 
   // ML 완성 모델 수 (UI에 정직하게 노출)
   const totalModules = 6;
@@ -240,7 +259,7 @@ export default function PatientDetail() {
           </button>
           <h1 className="text-xl font-bold text-gray-900 tracking-tight">{patient.name} {'\uD658\uC790 \uC0C1\uC138 \uC815\uBCF4'}</h1>
         </div>
-        <div className="flex gap-2">
+        <div className="flex gap-2 print:hidden">
           <button
             onClick={() => setEditOpen(true)}
             className="flex items-center gap-1.5 px-4 py-2 border border-gray-200 text-sm text-gray-700 rounded-lg hover:bg-gray-50 transition-colors"
@@ -262,6 +281,13 @@ export default function PatientDetail() {
             <GitCompare size={14} />
             {'\uC720\uC0AC \uC0AC\uB840'}
           </Link>
+          <button
+            onClick={() => window.print()}
+            className="flex items-center gap-1.5 px-4 py-2 bg-gray-800 text-white text-sm font-semibold rounded-lg hover:bg-gray-900 transition-colors shadow-sm"
+          >
+            <Printer size={14} />
+            {'\uACB0\uACFC \uB9AC\uD3EC\uD2B8 \uCD9C\uB825'}
+          </button>
         </div>
       </div>
 
@@ -275,7 +301,7 @@ export default function PatientDetail() {
 
       <div className="grid grid-cols-12 gap-5">
         {/* Left — Basic info */}
-        <div className="col-span-3">
+        <div className="col-span-3 space-y-4">
           <div className="bg-white rounded-xl p-5 border border-gray-100 shadow-sm">
             <div className="flex flex-col items-center text-center mb-5">
               <div className="w-16 h-16 rounded-full bg-accent flex items-center justify-center text-white text-2xl font-bold mb-3 shadow-sm">
@@ -291,7 +317,7 @@ export default function PatientDetail() {
               </div>
               <div className="flex justify-between text-xs">
                 <span className="text-gray-500">{'\uB098\uC774\u00B7\uC131\uBCC4'}</span>
-                <span className="font-medium text-gray-800">{patient.age}{UNITS.age} / {patient.sex === 'M' ? '\uB0A8' : '\uC5EC'}</span>
+                <span className="font-medium text-gray-800">{patient.age}{UNITS.age} / {sexKo(patient.sex)}</span>
               </div>
               <div className="flex justify-between text-xs">
                 <span className="text-gray-500">{'\uC5F0\uB77D\uCC98'}</span>
@@ -307,31 +333,63 @@ export default function PatientDetail() {
               </div>
             </div>
           </div>
+        <div className="gradient-accent rounded-xl p-5 text-white flex flex-col justify-between shadow-sm">
+          <div>
+            <Activity size={24} className="mb-2 text-white/90" aria-hidden="true" />
+            <h3 className="text-sm font-bold mb-1">{'\uD569\uBCD1\uC99D \uC704\uD5D8 \uBD84\uC11D'}</h3>
+            <p className="text-[11px] text-white/95 leading-relaxed">
+              {'\uC2DC\uB098\uB9AC\uC624\uB85C \uBBF8\uB798 \uC0C1\uD0DC\uB97C \uC608\uCE21\uD558\uACE0 \uAD8C\uC7A5 \uD504\uB85C\uADF8\uB7A8\uC744 \uD655\uC778\uD558\uC138\uC694.'}
+            </p>
+          </div>
+          <Link
+            to={`/risk-analysis/${id}`}
+            className="inline-flex items-center gap-1 bg-white text-accent px-3 py-2 rounded-lg text-xs font-semibold hover:bg-white/90 transition-colors mt-3 justify-center"
+          >
+            Risk Analysis <ArrowRight size={12} aria-hidden="true" />
+          </Link>
+        </div>
+        <div className="bg-white rounded-xl p-5 border border-gray-100 shadow-sm">
+          <div className="w-9 h-9 rounded-lg bg-accent-soft flex items-center justify-center mb-2">
+            <GitCompare size={18} className="text-accent" aria-hidden="true" />
+          </div>
+          <h3 className="text-sm font-bold text-gray-800 mb-1">{'\uC720\uC0AC \uC0AC\uB840 \uBE44\uAD50'}</h3>
+          <p className="text-[11px] text-gray-500 leading-relaxed mb-3">
+            {'\uBE44\uC2B7\uD55C \uD658\uC790 \uC0AC\uB840\uC5D0\uC11C \uAC1C\uC120 \uACBD\uB85C\uB97C \uCC3E\uC544\uBD05\uB2C8\uB2E4.'}
+          </p>
+          <Link
+            to={`/case-comparison/${id}`}
+            className="inline-flex items-center gap-1 text-accent text-xs font-semibold hover:underline"
+          >
+            {'\uC0AC\uB840 \uBD84\uC11D \uBCF4\uAE30'} <ArrowRight size={12} aria-hidden="true" />
+          </Link>
+        </div>
+
+        {/* N2: 수정 이력 카드 */}
+        <PatientAuditCard patientId={id} refreshKey={auditRefreshKey} />
         </div>
 
         {/* Right — AI 예측 + 추이 차트 */}
         <div className="col-span-9 space-y-5">
-          {/* AI Predictions */}
+          {/* 합병증별 1순위 요인 (대시보드에서 이동, 병원 6/13) */}
           <div className="bg-white rounded-xl p-5 border border-gray-100 shadow-sm">
             <div className="flex items-center justify-between mb-4">
-              <h3 className="text-sm font-bold text-gray-800">AI {'\uD569\uBCD1\uC99D \uC608\uCE21 \uACB0\uACFC'}</h3>
+              <h3 className="text-sm font-bold text-gray-800">{'합병증별 1순위 요인'}</h3>
               <div className="flex items-center gap-2">
                 <span
                   className="inline-flex items-center gap-1 px-2.5 py-1 bg-accent-soft text-accent text-xs rounded-full font-medium"
-                  title={`ML \ubaa8\ub378 ${readyModules}\uac1c \uc644\uc131 / \ucd5d ${totalModules}\uac1c \ud569\ubcd1\uc99d \uc608\uce21 \ubaa9\ud45c`}
+                  title={`ML 모델 ${readyModules}개 완성 / 총 ${totalModules}개`}
                 >
-                  AI {'\uBD84\uC11D'} {readyModules}/{totalModules} {'\ubaa8\ub4c8'}
+                  AI {'분석'} {readyModules}/{totalModules} {'모듈'}
                 </span>
                 {predLoading && (
                   <span className="inline-flex items-center gap-1 text-[11px] text-gray-400">
                     <RefreshCw size={12} className="animate-spin" aria-hidden="true" />
-                    {'\uc608\uce21 \uac31\uc2e0 \uc911'}
+                    {'예측 갱신 중'}
                   </span>
                 )}
               </div>
             </div>
 
-            {/* 예측 실패 시 재시도 */}
             {predError && (
               <div className="mb-3 flex items-center justify-between bg-red-50 border border-red-200 rounded-lg px-3 py-2 text-xs text-red-700">
                 <span className="inline-flex items-center gap-1.5">
@@ -341,57 +399,71 @@ export default function PatientDetail() {
                   onClick={() => runPrediction({ force: true })}
                   className="inline-flex items-center gap-1 px-2 py-1 border border-red-300 rounded text-red-700 hover:bg-red-100"
                 >
-                  <RefreshCw size={11} aria-hidden="true" /> {'\ub2e4\uc2dc \uc2dc\ub3c4'}
+                  <RefreshCw size={11} aria-hidden="true" /> {'다시 시도'}
                 </button>
               </div>
             )}
 
-            <div className="grid grid-cols-3 gap-3">
-              {completedModels.map((m) => {
-                const pred = predictions?.[m.key];
-                if (!pred?.available) {
-                  return (
-                    <div key={m.key} className="bg-gray-50 rounded-lg p-3 opacity-70">
-                      <div className="flex justify-between items-start mb-2">
-                        <span className="text-xs font-medium text-gray-700">{m.name}</span>
-                        <RiskBadge level={null} />
-                      </div>
-                      <p className="text-[11px] text-gray-400">{'\uc608\uce21 \uac12 \uc5c6\uc74c'}</p>
-                    </div>
-                  );
-                }
-                const dispScore = pred.display_score ?? pred.score;
-                const levelReason = (pred.clinical_flags || []).find((f) => f?.affects_level)?.message
-                  || (pred.clinical_floor_reasons || [])[0];
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+              {complicationCards.map((card) => {
+                const modelKey = modelNameMap[card.type];
+                const pred = predictions?.[modelKey];
+                const cm = diseaseCardMetric(modelKey, factorVal);
                 return (
-                  <div key={m.key} className="bg-gray-50 rounded-lg p-3">
-                    <div className="flex justify-between items-start mb-2">
-                      <span className="text-xs font-medium text-gray-700">{m.name}</span>
-                      <div className="flex items-center gap-1">
-                        {pred.model_role === 'screening' && (
-                          <span
-                            className="px-1 py-0.5 rounded text-[8px] font-semibold bg-slate-100 text-slate-500 border border-slate-200"
-                            title="\uC800\uC815\uD655\uB3C4 \uC120\uBCC4 \uBAA8\uB378 \u2014 \uCC38\uACE0\uC6A9, \uC784\uC0C1 \uD655\uC778 \uD544\uC694"
-                          >
-                            {'\uC120\uBCC4'}
-                          </span>
-                        )}
-                        <RiskBadge level={pred.level} />
-                      </div>
-                    </div>
-                    <p className="text-xs text-gray-500 mb-1">
-                      {'\uC704\uD5D8\uC9C0\uC218'} <span className="text-sm font-bold text-gray-800">{dispScore}</span>/100
-                    </p>
-                    <RiskBar score={dispScore} level={pred.level} />
-                    {levelReason && (
-                      <p className="mt-1.5 text-[10px] text-amber-700 leading-tight">{levelReason}</p>
-                    )}
-                    {pred.model_role === 'screening' && (
-                      <p className="mt-1 text-[10px] text-slate-400 leading-tight">{'\uC120\uBCC4\uC6A9 \u2014 \uC784\uC0C1 \uD655\uC778 \uD544\uC694'}</p>
-                    )}
-                  </div>
+                  <RiskCard
+                    key={card.type}
+                    type={card.type}
+                    name={card.name}
+                    englishName={card.englishName}
+                    level={pred?.level}
+                    metricLabel={cm ? cm.label : card.metricLabel}
+                    metricValue={cm ? `${cm.value}${cm.unit}` : '--'}
+                    score={pred?.display_score ?? pred?.score}
+                    available={pred?.available ?? false}
+                    insufficient={pred?.risk_source === 'insufficient_data'}
+                    missingRequired={pred?.missing_required}
+                    age={patient.age}
+                    clinicalFlags={pred?.clinical_flags}
+                    modelRole={pred?.model_role}
+                    showPercentile={false}
+                  />
                 );
               })}
+            </div>
+          </div>
+
+          {/* 주요 위험 요인 정리 (대시보드에서 이동) */}
+          <div className="bg-white rounded-xl p-5 border border-gray-100 shadow-sm">
+            <h3 className="text-sm font-bold text-gray-800 mb-1">{'주요 위험 요인 정리'}</h3>
+            <p className="text-[10px] text-gray-400 mb-4">{'위험도 산출에 영향이 큰 지표 순으로 정렬됩니다.'}</p>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-3">
+              {riskFactors
+                .map((rf) => { const v = riskFactorVal(rf.key); return { rf, value: v, pct: riskPct(rf.key, v, rf.ref) }; })
+                .sort((a, b) => b.pct - a.pct)
+                .map(({ rf, value, pct }) => {
+                  const lvl = scoreToLevel(pct);
+                  const color = riskColorFor(lvl);
+                  return (
+                    <div key={rf.key} title={`정상: ${rf.normalLabel}`}>
+                      <div className="flex justify-between items-baseline mb-1">
+                        <span className="text-xs text-gray-500">{rf.label}</span>
+                        <span className="text-xs font-semibold text-gray-700">
+                          {value ?? '--'} <span className="text-gray-400 font-normal">{rf.unit}</span>
+                        </span>
+                      </div>
+                      <div
+                        className="w-full bg-gray-100 rounded-full h-1.5"
+                        role="progressbar"
+                        aria-valuenow={Math.round(pct)}
+                        aria-valuemin={0}
+                        aria-valuemax={100}
+                        aria-label={`${rf.label} ${color.ariaLabel}`}
+                      >
+                        <div className={`h-1.5 rounded-full transition-all duration-500 ${color.bar}`} style={{ width: `${pct}%` }} />
+                      </div>
+                    </div>
+                  );
+                })}
             </div>
           </div>
 
@@ -405,8 +477,7 @@ export default function PatientDetail() {
       </div>
 
       {/* Lab values (14 items, 2 columns) */}
-      <div className="grid grid-cols-3 gap-5">
-        <div className="col-span-2 bg-white rounded-xl p-5 border border-gray-100 shadow-sm">
+      <div className="bg-white rounded-xl p-5 border border-gray-100 shadow-sm">
           <h3 className="text-sm font-bold text-gray-800 mb-1">{'\uCD5C\uADFC \uAC80\uC0AC \uC218\uCE58'}</h3>
           <p className="text-[11px] text-gray-400 mb-4">
             {'\ud56d\ubaa9 \uc774\ub984 \uc624\ub978\ucabd '} <Info size={10} className="inline text-gray-300 align-middle" aria-hidden="true" /> {'\uc544\uc774\ucf58\uc5d0 \ub9c8\uc6b0\uc2a4\ub97c \uc62c\ub9ac\uba74 \uc815\uc0c1 \ubc94\uc704\ub97c \ubcfc \uc218 \uc788\uc2b5\ub2c8\ub2e4.'}
@@ -445,44 +516,6 @@ export default function PatientDetail() {
             </table>
           </div>
         </div>
-
-        {/* CTA stack */}
-        <div className="space-y-4">
-          <div className="gradient-accent rounded-xl p-5 text-white flex flex-col justify-between shadow-sm">
-            <div>
-              <Activity size={24} className="mb-2 text-white/90" aria-hidden="true" />
-              <h3 className="text-sm font-bold mb-1">{'\uD569\uBCD1\uC99D \uC704\uD5D8 \uBD84\uC11D'}</h3>
-              <p className="text-[11px] text-white/95 leading-relaxed">
-                {'\uC2DC\uB098\uB9AC\uC624\uB85C \uBBF8\uB798 \uC0C1\uD0DC\uB97C \uC608\uCE21\uD558\uACE0 \uAD8C\uC7A5 \uD504\uB85C\uADF8\uB7A8\uC744 \uD655\uC778\uD558\uC138\uC694.'}
-              </p>
-            </div>
-            <Link
-              to={`/risk-analysis/${id}`}
-              className="inline-flex items-center gap-1 bg-white text-accent px-3 py-2 rounded-lg text-xs font-semibold hover:bg-white/90 transition-colors mt-3 justify-center"
-            >
-              Risk Analysis <ArrowRight size={12} aria-hidden="true" />
-            </Link>
-          </div>
-          <div className="bg-white rounded-xl p-5 border border-gray-100 shadow-sm">
-            <div className="w-9 h-9 rounded-lg bg-accent-soft flex items-center justify-center mb-2">
-              <GitCompare size={18} className="text-accent" aria-hidden="true" />
-            </div>
-            <h3 className="text-sm font-bold text-gray-800 mb-1">{'\uC720\uC0AC \uC0AC\uB840 \uBE44\uAD50'}</h3>
-            <p className="text-[11px] text-gray-500 leading-relaxed mb-3">
-              {'\uBE44\uC2B7\uD55C \uD658\uC790 \uC0AC\uB840\uC5D0\uC11C \uAC1C\uC120 \uACBD\uB85C\uB97C \uCC3E\uC544\uBD05\uB2C8\uB2E4.'}
-            </p>
-            <Link
-              to={`/case-comparison/${id}`}
-              className="inline-flex items-center gap-1 text-accent text-xs font-semibold hover:underline"
-            >
-              {'\uC0AC\uB840 \uBD84\uC11D \uBCF4\uAE30'} <ArrowRight size={12} aria-hidden="true" />
-            </Link>
-          </div>
-
-          {/* N2: 수정 이력 카드 */}
-          <PatientAuditCard patientId={id} refreshKey={auditRefreshKey} />
-        </div>
-      </div>
     </div>
   );
 }

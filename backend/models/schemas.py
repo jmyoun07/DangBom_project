@@ -75,16 +75,19 @@ class PatientBase(BaseModel):
     urine_sg: Optional[float] = None
 
     # ── 과거력·당뇨 ────────────────────────────
-    hypertension: Optional[int] = 0
+    # v2.3.0 (감사): 미입력을 0('없음')으로 단정하지 않고 None(미상)으로 둔다.
+    #   모델은 NaN → 학습된 KNNImputer 로 처리(train/serve 결측처리 일치).
+    #   hypertension 은 혈압값이 있으면 compute_derived 가 자동 파생한다.
+    hypertension: Optional[int] = None
     dm_diagnosis_age: Optional[int] = None
     dm_duration: Optional[int] = None
-    dm_medication: Optional[int] = 0
-    insulin_medication: Optional[int] = 0
+    dm_medication: Optional[int] = None
+    insulin_medication: Optional[int] = None
 
     # ── 생활습관 ────────────────────────────────
-    smoking: Optional[int] = 0
-    drinking: Optional[int] = 0
-    exercise: Optional[int] = 0
+    smoking: Optional[int] = None
+    drinking: Optional[int] = None
+    exercise: Optional[int] = None
     sleep_hours: Optional[float] = None
 
     # ── 기타 (참고용) ──────────────────────────
@@ -121,6 +124,38 @@ class PatientResponse(PatientBase):
     upload_date: Optional[datetime] = None
     risk_level: Optional[str] = None
 
+    # v2.2.8: 응답 스키마는 입력용 생리범위 제약(ge/le)을 상속하면 안 된다.
+    #   DB 에 저장된 레거시/엣지 값(예 hba1c=0.0, fbg<10, sbp<40)에서 model_validate 가
+    #   ValidationError 를 던져 목록/상세/by-chart/PATCH 응답이 통째로 500 으로 깨졌다.
+    #   → 조회는 저장된 값을 그대로 통과시키고, 범위 검증은 입력(PatientCreate/Update)에서만.
+    # v2.2.9: phone(max_length)·sex(_validate_sex) 제약도 해제 — 레거시 값('남성'/'U'/36자 phone)
+    #   이 저장돼 있으면 목록 전체가 500 되던 문제 봉쇄. (업로드는 Pydantic 우회로 이런 값 저장 가능)
+    phone: Optional[str] = None
+    sex: Optional[str] = None
+    age: Optional[int] = None
+    hba1c: Optional[float] = None
+    c_peptide: Optional[float] = None
+    fbg: Optional[float] = None
+    he_insulin: Optional[float] = None
+    ggt: Optional[float] = None
+    alt: Optional[float] = None
+    ast: Optional[float] = None
+    cr: Optional[float] = None
+    total_cholesterol: Optional[float] = None
+    triglycerides: Optional[float] = None
+    hdl: Optional[float] = None
+    ldl: Optional[float] = None
+    sbp: Optional[float] = None
+    dbp: Optional[float] = None
+    bmi: Optional[float] = None
+    height: Optional[float] = None
+    weight: Optional[float] = None
+
+    @field_validator("sex")
+    @classmethod
+    def _validate_sex(cls, v):  # v2.2.9: 부모 검증 override — 조회는 저장값 그대로(비정상 sex도 500 금지)
+        return v
+
     class Config:
         from_attributes = True
 
@@ -142,6 +177,7 @@ class MeasurementResponse(BaseModel):
     c_peptide: Optional[float] = None
     hba1c: Optional[float] = None
     cr: Optional[float] = None
+    bmi: Optional[float] = None
 
     class Config:
         from_attributes = True

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import { AlertTriangle, ArrowRight, GitCompare, Activity as ActivityIcon, RotateCw } from 'lucide-react';
 import api from '../api/client';
@@ -10,90 +10,12 @@ import EmptyState from '../components/EmptyState';
 import {
   RISK_LEVELS,
   scoreToLevel,
-  riskColorFor,
   UNITS,
   prodSafeError,
 } from '../theme';
-
-const complicationCards = [
-  { type: 'kidney',         name: '\uB2F9\uB1E8\uBCD1\uC131 \uC2E0\uC7A5\uC9C8\uD658',    englishName: 'KIDNEY DISEASE',          metricLabel: `eGFR (${UNITS.egfr})`, metricKey: 'eGFR' },
-  { type: 'dementia',       name: '\uB2F9\uB1E8\uBCD1\uC131 \uCE58\uB9E4',                englishName: 'DIABETES-RELATED DEMENTIA', metricLabel: '\uB098\uC774 (\uC138)', metricKey: 'age' },
-  { type: 'cardiovascular', name: '\uB2F9\uB1E8\uBCD1\uC131 \uC2EC\uD608\uAD00 \uC9C8\uD658', englishName: 'CARDIOVASCULAR',           metricLabel: `SBP (${UNITS.bp})`, metricKey: 'sbp' },
-  { type: 'neuropathy',     name: '\uB2F9\uB1E8\uBCD1\uC131 \uC2E0\uACBD\uBCD1\uC99D',     englishName: 'NEUROPATHY',              metricLabel: `HDL (${UNITS.chol})`, metricKey: 'hdl' },
-  { type: 'cerebrovascular',name: '\uB2F9\uB1E8\uBCD1\uC131 \uB1CC\uD608\uAD00 \uC9C8\uD658', englishName: 'CEREBROVASCULAR DISEASE', metricLabel: `BMI (${UNITS.bmi})`, metricKey: 'bmi' },
-  { type: 'retinopathy',    name: '\uB2F9\uB1E8\uBCD1\uC131 \uB9DD\uB9C9\uBCD1\uC99D',     englishName: 'RETINOPATHY',             metricLabel: '\uC704\uD5D8 \uC810\uC218',  metricKey: 'score' },
-];
-
-const modelNameMap = {
-  kidney: 'kidney_disease',
-  retinopathy: 'retinopathy',
-  cardiovascular: 'cardiovascular',
-  neuropathy: 'neuropathy',
-  dementia: 'dementia',
-  cerebrovascular: 'cerebrovascular',
-};
-
-// v2: 병원 수집 변수 기준. ACR/요알부민 제거됨.
-// 각 지표의 실제 임상 reference 범위(정상 상한·하한) 를 기준으로 바 채움 비율 계산.
-// - high: 정상 상한 이상 = 높을수록 나쁨  (예: HbA1c 7% 이상이면 100%)
-// - low : 정상 하한 이하 = 낮을수록 나쁨  (예: eGFR 60 이하이면 100%)
-const riskFactors = [
-  { label: 'C-peptide', unit: UNITS.cpeptide,  key: 'c_peptide', ref: [1.0, 3.5], normalLabel: '1.0\u20133.5 ng/mL' },
-  { label: 'HbA1c',     unit: UNITS.percent,   key: 'hba1c',     ref: [0, 7.0],    normalLabel: '< 7%' },
-  { label: '\uACF5\uBCF5\uD608\uB2F9', unit: UNITS.glucose, key: 'fbg', ref: [0, 126], normalLabel: '< 126 mg/dL' },
-  { label: 'SBP',       unit: UNITS.bp,        key: 'sbp',       ref: [0, 140],    normalLabel: '< 140 mmHg' },
-  { label: 'BMI',       unit: UNITS.bmi,       key: 'bmi',       ref: [18.5, 25],  normalLabel: '18.5\u201325 kg/m\u00B2' },
-  { label: 'eGFR',      unit: UNITS.egfr,      key: 'eGFR',      ref: [60, 120],   normalLabel: '\u2265 60 mL/min' },
-  { label: '\uB098\uC774', unit: '\uC138',     key: 'age',       ref: [0, 65],     normalLabel: '\u2013' },
-];
-
-// 지표별 위험 방향 결정 (0~100 %로 정규화)
-function riskPct(key, value, ref) {
-  if (value == null || value === '') return 0;
-  const v = Number(value); if (!Number.isFinite(v)) return 0;
-  const [lo, hi] = ref;
-  if (key === 'c_peptide') {
-    // 1.0~2.5 를 안전 구간, 0.8 미만 = 100%, 3.5 초과 = 80% (인슐린 저항)
-    if (v < lo) return Math.min(100, (1 - v / lo) * 100);
-    if (v > hi) return Math.min(100, ((v - hi) / hi) * 80 + 40);
-    return 25;
-  }
-  if (key === 'eGFR') {
-    // 60 이상이면 안전. 15 이하면 100%.
-    if (v >= hi) return 10;
-    if (v >= lo) return 30;
-    return Math.min(100, ((lo - v) / lo) * 100);
-  }
-  if (key === 'bmi') {
-    if (v >= lo && v <= hi) return 20;
-    if (v > hi)  return Math.min(100, ((v - hi) / hi) * 200 + 40);
-    return Math.min(100, ((lo - v) / lo) * 100);
-  }
-  if (key === 'age') {
-    return Math.min(100, (v / 100) * 100);
-  }
-  // high-side risk (hba1c, fbg, sbp)
-  if (v <= hi) return Math.max(10, (v / hi) * 40);
-  return Math.min(100, ((v - hi) / hi) * 200 + 40);
-}
-
-// CKD-EPI 간이 계산 (Cr + age + sex → eGFR)
-function calcEGFR(cr, age, sex) {
-  if (!cr || !age) return null;
-  const s = String(sex).trim().toUpperCase();
-  const isMale = (s === 'M' || s === '1' || s === '남' || s === '남자' || s === 'MALE');
-  const isFemale = (s === 'F' || s === '2' || s === '여' || s === '여자' || s === 'FEMALE');
-  if (!isMale && !isFemale) return null;  // v2.2.6(감사 H1): 성별 불명 → eGFR 미표시(여성 묵시 금지)
-  const kappa = isMale ? 0.9 : 0.7;
-  const alpha = isMale ? -0.411 : -0.329;
-  const factor = isMale ? 1.0 : 1.018;
-  const ratio = cr / kappa;
-  return Math.round(
-    141 * Math.pow(Math.min(ratio, 1), alpha) *
-    Math.pow(Math.max(ratio, 1), -1.209) *
-    Math.pow(0.993, age) * factor
-  );
-}
+import {
+  complicationCards, modelNameMap, topRiskFactor, calcEGFR, buildFactorVal,
+} from '../utils/riskDisplay';
 
 // 레벨별 게이지 부제 (고위험/중위험/저위험/평가중 에 따라 다른 문구)
 function gaugeSubtitle(level) {
@@ -163,6 +85,11 @@ export default function Dashboard() {
     setPredError(null);
   }, [patientId]);
 
+  // 응답 레이스 가드 — 환자 빠르게 전환 시 이전 요청의 늦은 응답이 새 환자 화면을 덮지 않도록.
+  //   (CaseComparison 의 cancelled 플래그와 동일 목적. 재시도 버튼에서도 호출되므로 seq 방식 사용)
+  const loadSeqRef = useRef(0);
+  const predSeqRef = useRef(0);
+
   // 환자 상세 불러오기
   const loadPatient = useCallback(async () => {
     if (!validPatientId) {
@@ -171,14 +98,18 @@ export default function Dashboard() {
       setErrorKind('not_found');
       return;
     }
+    const seq = ++loadSeqRef.current;
+    const stale = () => seq !== loadSeqRef.current;
     try {
       setLoading(true);
       setError(null);
       setErrorKind(null);
       const res = await api.get(`/patients/${numericPatientId}`);
+      if (stale()) return;
       const d = res.data.data;
       setPatient({ ...(d.patient || d), measurements: d.measurements || [] });
     } catch (err) {
+      if (stale()) return;
       prodSafeError('Dashboard.loadPatient')(err);
       const status = err?.response?.status;
       if (status === 404) {
@@ -192,7 +123,7 @@ export default function Dashboard() {
         setErrorKind('unknown');
       }
     } finally {
-      setLoading(false);
+      if (!stale()) setLoading(false);
     }
   }, [numericPatientId, validPatientId]);
 
@@ -202,16 +133,20 @@ export default function Dashboard() {
       setPredLoading(false);
       return;
     }
+    const seq = ++predSeqRef.current;
+    const stale = () => seq !== predSeqRef.current;
     try {
       setPredLoading(true);
       setPredError(null);
       const res = await api.post('/predict', { patient_id: numericPatientId });
+      if (stale()) return;
       setPredictions(res.data.data);
     } catch (err) {
+      if (stale()) return;
       prodSafeError('Dashboard.predict')(err);
       setPredError('AI \uc608\uce21 \uc11c\ubc84\uc5d0 \uc77c\uc2dc\uc801 \uBB38\uC81C\uAC00 \uBC1C\uC0DD\uD588\uC2B5\uB2C8\uB2E4.');
     } finally {
-      setPredLoading(false);
+      if (!stale()) setPredLoading(false);
     }
   }, [numericPatientId, validPatientId]);
 
@@ -317,82 +252,56 @@ export default function Dashboard() {
     ? (highestRisk[1].level || scoreToLevel(highestRisk[1].score))
     : null;
 
-  // C-peptide trend data
-  const cpeptideData = measurements.map((m) => ({
-    month: new Date(m.measured_at).toLocaleDateString('ko-KR', { month: 'short' }),
-    value: m.c_peptide,
+  // v2.2.8 (병원 정책): 필수 검사 누락으로 6개 전부 예측 불가면 게이지/카드에 '데이터 부족' 표시.
+  const predList = predictions ? Object.values(predictions) : [];
+  const allInsufficient = predList.length > 0 && predList.every((v) => v?.risk_source === 'insufficient_data');
+  const insufficientMissing = allInsufficient ? (predList[0]?.missing_required || []) : [];
+
+  // 당화혈색소(HbA1c) 추이 데이터 (병원 피드백: 가장 기본 지표라 좌하단 차트를 HbA1c 로)
+  const ymd = (v) => {
+    const d = new Date(v);
+    return `${String(d.getFullYear()).slice(2)}.${String(d.getMonth() + 1).padStart(2, '0')}.${String(d.getDate()).padStart(2, '0')}`;
+  };
+  const hba1cTrendData = measurements.map((m) => ({
+    month: ymd(m.measured_at),
+    value: m.hba1c,
   }));
 
   // v2.2.7 (F2): 백엔드 단일소스 eGFR(p.egfr, normalize_sex 적용) 우선 — 모델/PatientDetail 과 일치.
   //   클라이언트 calcEGFR 은 백엔드 미산출 시에만 fallback.
   const egfr = (p.egfr != null && p.egfr !== '') ? Math.round(p.egfr) : calcEGFR(p.cr, p.age, p.sex);
 
-  const getMetricValue = (metricKey) => {
-    const map = {
-      eGFR: egfr ?? '--',
-      age: p.age || '--',
-      sbp: p.sbp || '--',
-      hdl: p.hdl || '--',
-      bmi: p.bmi || '--',
-      score: predictions?.retinopathy?.score != null ? `${predictions.retinopathy.score}%` : '--',
-    };
-    return map[metricKey] || '--';
-  };
-
-  const getRiskFactor = (key) => {
-    const map = {
-      c_peptide: p.c_peptide,
-      hba1c: p.hba1c,
-      fbg: p.fbg,
-      sbp: p.sbp,
-      bmi: p.bmi,
-      eGFR: egfr,
-      age: p.age,
-    };
-    return map[key] ?? 0;
-  };
+  // 항목3: 위험도 1위 합병증의 주요 영향 지표 (휴리스틱, 설명용)
+  const factorVal = buildFactorVal(p, egfr);
+  const topFactor = highestRisk ? topRiskFactor(highestRisk[0], factorVal) : null;
+  const topFactorDisease = highestRisk
+    ? (complicationCards.find((c) => modelNameMap[c.type] === highestRisk[0])?.name || '')
+    : '';
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 fade-in w-full break-keep">
       {/* LEFT COLUMN */}
       <div className="lg:col-span-3 space-y-4 min-w-0">
-        {/* Patient Info Card */}
+        {/* 환자 요약 수치 (신원정보는 상단 바에 있으므로 제외) */}
         <div className="bg-white rounded-xl p-5 border border-gray-100 shadow-sm">
-          <div className="flex items-center gap-3 mb-4">
-            <div className="w-12 h-12 rounded-full bg-accent flex items-center justify-center text-white text-lg font-bold shadow-sm">
-              {(p.name || '?')[0]}
-            </div>
-            <div>
-              <h2 className="text-base font-bold text-gray-800">{p.name}</h2>
-              <div className="flex gap-1.5 mt-0.5">
-                <span className="px-1.5 py-0.5 bg-blue-50 text-blue-600 text-xs rounded font-medium">
-                  {p.sex === 'M' ? 'M' : p.sex === 'F' ? 'F' : '-'}
-                </span>
-                <span className="px-1.5 py-0.5 bg-gray-50 text-gray-600 text-xs rounded font-medium">
-                  {p.age}{'\uC138'}
-                </span>
-              </div>
-            </div>
-          </div>
-          <p className="text-xs text-gray-500 mb-4">{p.chart_no}</p>
           <div className="grid grid-cols-2 gap-3">
             <div className="bg-gray-50 rounded-lg p-2.5 text-center">
               <p className="text-[10px] text-gray-400">HbA1c</p>
-              <p className="text-sm font-bold text-gray-800">{p.hba1c || '--'}{UNITS.percent}</p>
+              <p className="text-sm font-bold text-gray-800">{p.hba1c ?? '--'}{UNITS.percent}</p>
             </div>
             <div className="bg-gray-50 rounded-lg p-2.5 text-center">
-              <p className="text-[10px] text-gray-400">{'\uD608\uC555'}</p>
-              <p className="text-sm font-bold text-gray-800">{p.sbp || '--'}/{p.dbp || '--'}</p>
+              <p className="text-[10px] text-gray-400">{'혈압'}</p>
+              <p className="text-sm font-bold text-gray-800">{p.sbp ?? '--'}/{p.dbp ?? '--'}</p>
             </div>
             <div className="bg-gray-50 rounded-lg p-2.5 text-center">
-              <p className="text-[10px] text-gray-400">{'\uAE30\uAC04'}</p>
-              <p className="text-sm font-bold text-gray-800">{p.dm_duration || '--'}{'\uB144'}</p>
+              <p className="text-[10px] text-gray-400">{'당뇨 이환기간'}</p>
+              <p className="text-sm font-bold text-gray-800">{p.dm_duration ?? '--'}{'년'}</p>
             </div>
             <div className="bg-gray-50 rounded-lg p-2.5 text-center">
-              <p className="text-[10px] text-gray-400">{'\uCD5C\uADFC \uAC80\uC0AC\uC77C'}</p>
+              <p className="text-[10px] text-gray-400">{'최근 검사일'}</p>
               <p className="text-sm font-bold text-gray-800">
                 {(p.exam_date || p.upload_date)
-                  ? new Date(p.exam_date || p.upload_date).toLocaleDateString('ko-KR', { month: 'short', day: 'numeric' })
+                  ? new Date(p.exam_date || p.upload_date).toLocaleDateString('ko-KR', { year: '2-digit', month: '2-digit', day: '2-digit' })
                   : '--'}
               </p>
             </div>
@@ -425,26 +334,34 @@ export default function Dashboard() {
             </div>
           ) : (
             <>
-              <RiskGauge score={overallScore} level={overallLevel || RISK_LEVELS.PENDING} />
+              <RiskGauge score={overallScore} level={overallLevel || (allInsufficient ? RISK_LEVELS.INSUFFICIENT : RISK_LEVELS.PENDING)} />
               <p className="text-xs text-gray-500 text-center mt-2">
-                {gaugeSubtitle(overallLevel)}
+                {allInsufficient ? '필수 검사 수치가 없어 위험도를 평가할 수 없습니다.' : gaugeSubtitle(overallLevel)}
               </p>
+              {allInsufficient && insufficientMissing.length > 0 && (
+                <p className="text-[10px] text-gray-400 text-center mt-1 leading-tight">
+                  {'누락: '}{insufficientMissing.slice(0, 5).join(', ')}{insufficientMissing.length > 5 ? ` 외 ${insufficientMissing.length - 5}개` : ''}
+                </p>
+              )}
+              {topFactor && topFactor.abnormal && (
+                <div className="mt-3 text-[11px] bg-gray-50 rounded-lg px-3 py-2 leading-relaxed">
+                  <p className="text-gray-400 mb-0.5">최고 위험 · {topFactorDisease}</p>
+                  <p>
+                    <span className="text-gray-500">주요 영향 지표 </span>
+                    <span className="font-semibold text-gray-700">{topFactor.label}</span>{' '}
+                    <span className="font-bold text-red-500">{topFactor.value}{topFactor.unit}</span>
+                    <span className="text-gray-400"> (정상 {topFactor.range})</span>
+                  </p>
+                </div>
+              )}
             </>
           )}
         </div>
-
-        {/* C-peptide Trend — accent 색으로 통일 */}
-        <TrendChart
-          data={cpeptideData}
-          unit={UNITS.cpeptide}
-          color="var(--color-accent, #6366f1)"
-          title={'C-peptide \uC218\uCE58 \uCD94\uC774'}
-        />
       </div>
 
       {/* CENTER COLUMN - Complication Cards */}
       <div className="lg:col-span-6 min-w-0">
-        <h2 className="text-base font-bold text-gray-800 mb-4">{'\uC601\uC5ED\uBCC4 \uD569\uBCD1\uC99D \uC0C1\uD0DC'}</h2>
+        <h2 className="text-base font-bold text-gray-800 mb-4">{'\uD569\uBCD1\uC99D \uC608\uCE21 \uC704\uD5D8\uB3C4'}</h2>
 
         {predError && (
           <div className="mb-3 p-3 bg-amber-50 border border-amber-200 rounded-lg flex items-center justify-between">
@@ -466,6 +383,7 @@ export default function Dashboard() {
           {complicationCards.map((card) => {
             const modelKey = modelNameMap[card.type];
             const pred = predictions?.[modelKey];
+            // 대시보드: 실제 합병증 위험지수(N/100) + 백분위('100명 중 N번째') 표시 (병원 6/13)
             return (
               <RiskCard
                 key={card.type}
@@ -473,13 +391,17 @@ export default function Dashboard() {
                 name={card.name}
                 englishName={card.englishName}
                 level={pred?.level}
-                metricLabel={card.metricLabel}
-                metricValue={getMetricValue(card.metricKey)}
                 score={pred?.display_score ?? pred?.score}
                 available={pred?.available ?? false}
                 percentile={pred?.percentile}
+                fold={pred?.fold_change}
+                age={p.age}
                 clinicalFlags={pred?.clinical_flags}
                 modelRole={pred?.model_role}
+                insufficient={pred?.risk_source === 'insufficient_data'}
+                missingRequired={pred?.missing_required}
+                showScore
+                showPercentile
               />
             );
           })}
@@ -488,45 +410,13 @@ export default function Dashboard() {
 
       {/* RIGHT COLUMN */}
       <div className="lg:col-span-3 space-y-4 min-w-0">
-        {/* Risk Factors Panel — 바 색/비율을 위험 방향(정상범위 기준) 으로 정규화 */}
-        <div className="bg-white rounded-xl p-5 border border-gray-100 shadow-sm">
-          <h3 className="text-sm font-bold text-gray-800 mb-1">{'\uC8FC\uC694 \uC704\uD5D8 \uC694\uC778 \uBD84\uC11D'}</h3>
-          <p className="text-[10px] text-gray-400 mb-4">
-            {'\uBC14\uB294 \uC815\uC0C1 \uBC94\uC704 \uB300\uBE44 \uC774\uD0C8 \uC815\uB3C4\ub97c \uB098\uD0C0\uB0C5\uB2C8\uB2E4.'}
-          </p>
-          <div className="space-y-3">
-            {riskFactors.map((rf) => {
-              const value = getRiskFactor(rf.key);
-              const pct = riskPct(rf.key, value, rf.ref);
-              const level = scoreToLevel(pct);
-              const color = riskColorFor(level);
-              return (
-                <div key={rf.key} title={`\uC815\uC0C1: ${rf.normalLabel}`}>
-                  <div className="flex justify-between items-baseline mb-1">
-                    <span className="text-xs text-gray-500">{rf.label}</span>
-                    <span className="text-xs font-semibold text-gray-700">
-                      {value || '--'} <span className="text-gray-400 font-normal">{rf.unit}</span>
-                    </span>
-                  </div>
-                  <div
-                    className="w-full bg-gray-100 rounded-full h-1.5"
-                    role="progressbar"
-                    aria-valuenow={Math.round(pct)}
-                    aria-valuemin={0}
-                    aria-valuemax={100}
-                    aria-label={`${rf.label} ${color.ariaLabel}`}
-                  >
-                    <div
-                      className={`h-1.5 rounded-full transition-all duration-500 ${color.bar}`}
-                      style={{ width: `${pct}%` }}
-                    />
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-
+        {/* 당화혈색소(HbA1c) 추이 — 우측 빈 공간 활용 + 첫 화면 노출 */}
+        <TrendChart
+          data={hba1cTrendData}
+          unit={UNITS.percent}
+          color="var(--color-accent, #6366f1)"
+          title={'당화혈색소 수치 추이'}
+        />
         {/* CTA Card — Risk Analysis */}
         <div className="gradient-accent rounded-xl p-5 text-white shadow-sm">
           <div className="flex items-center gap-2 mb-3">

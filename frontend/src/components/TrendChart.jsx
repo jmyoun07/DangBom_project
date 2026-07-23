@@ -20,12 +20,20 @@ export default function TrendChart({
   reference = null,
   critical = null,
   yPad = 0.1,
+  maxPoints = 8,   // v2.2.8: 최신 N개 측정만 표시(전체 연도 추이는 불필요 — 사용자 요청)
 }) {
-  const currentValue = data.length > 0 ? data[data.length - 1].value : null;
+  // 듬성듬성 측정(방문마다 일부 지표만 측정)에서 null/빈값 포인트를 제거한다.
+  //   미제거 시 Recharts <Line> 가 null 에서 끊겨 점만 찍히고 선이 안 그려진다.
+  // data 는 날짜 오름차순 가정 → slice(-maxPoints) 로 최신 N개만 남긴다.
+  const points = (data || [])
+    .filter((d) => d && d.value != null && d.value !== '' && Number.isFinite(Number(d.value)))
+    .map((d) => ({ ...d, value: Number(d.value) }))
+    .slice(-Math.max(1, maxPoints));
+  const currentValue = points.length > 0 ? points[points.length - 1].value : null;
 
   // Y 도메인 — 데이터 + 참조 범위 모두 포함하도록 자동 계산
   const yDomain = (() => {
-    const vals = data.map((d) => d.value).filter((v) => Number.isFinite(v));
+    const vals = points.map((d) => d.value).filter((v) => Number.isFinite(v));
     if (!vals.length) return ['auto', 'auto'];
     let min = Math.min(...vals);
     let max = Math.max(...vals);
@@ -38,8 +46,16 @@ export default function TrendChart({
       max = Math.max(max, critical);
     }
     const span = Math.max(1, max - min);
-    return [Math.max(0, min - span * yPad), max + span * yPad];
+    // 도메인 끝값을 소수 2자리로 정리한다. recharts 는 domain 양끝을 눈금 라벨로 그대로 쓰기
+    // 때문에, 반올림하지 않으면 1.2100000000000002 같은 부동소수점 오차가 축에 노출되고
+    // YAxis width(36px)를 넘겨 잘린다. floor/ceil 로 범위를 좁히지 않고 바깥으로만 정리.
+    const lo = Math.max(0, Math.floor((min - span * yPad) * 100) / 100);
+    const hi = Math.ceil((max + span * yPad) * 100) / 100;
+    return [lo, hi];
   })();
+
+  // 중간 눈금도 domain 에서 계산되므로 소수 2자리로 표시 (원본 값은 툴팁에서 그대로 노출).
+  const formatY = (v) => (Number.isFinite(v) ? String(Math.round(v * 100) / 100) : v);
 
   // X축 라벨 포매터 — Date 객체 / ISO 문자열 / 그냥 라벨 모두 지원
   const formatX = (v) => {
@@ -68,7 +84,7 @@ export default function TrendChart({
       </div>
       <div role="img" aria-label={`${title} \uCD94\uC774 \uCC28\uD2B8`}>
         <ResponsiveContainer width="100%" height={120}>
-          <LineChart data={data} margin={{ top: 5, right: 5, left: -10, bottom: 0 }}>
+          <LineChart data={points} margin={{ top: 5, right: 5, left: 0, bottom: 0 }}>
             <CartesianGrid strokeDasharray="3 3" stroke="#f3f4f6" />
             <XAxis
               dataKey="month"
@@ -79,10 +95,11 @@ export default function TrendChart({
             />
             <YAxis
               domain={yDomain}
+              tickFormatter={formatY}
               tick={{ fontSize: 11, fill: '#9ca3af' }}
               axisLine={false}
               tickLine={false}
-              width={36}
+              width={42}
             />
             <Tooltip
               contentStyle={{ borderRadius: '8px', border: '1px solid #e5e7eb', fontSize: '12px' }}

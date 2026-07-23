@@ -411,10 +411,12 @@ def patient_to_features(patient_data: dict) -> dict:
         "sex": sex_code,
 
         # === 당뇨 === (v2.1.3 Codex C1: bool/str 안전 변환)
+        # v2.3.0 (감사): 결측 약물여부를 0('없음')으로 단정하지 않고 NaN → imputer 위임.
+        #   학습 데이터는 미상값을 NaN 으로 유지하므로 0 강제는 train/serve 불일치였음.
         "DM_duration":       dm_dur,
         "DM_diagnosis_age":  dm_diag_age,
-        "DM_medication":     _safe_num(d.get("dm_medication"), 0.0),
-        "insulin_medication": _safe_num(d.get("insulin_medication"), 0.0),
+        "DM_medication":     _safe_num(d.get("dm_medication"), np.nan),
+        "insulin_medication": _safe_num(d.get("insulin_medication"), np.nan),
 
         # === 혈당·C-peptide ===
         "HE_glu":            glu,
@@ -442,7 +444,8 @@ def patient_to_features(patient_data: dict) -> dict:
         "SBP":               sbp,
         "DBP":               dbp,
         "pulse_pressure":    pp,
-        "hypertension":      _safe_num(d.get("hypertension"), 0.0),
+        # v2.3.0 (감사): 결측 고혈압여부 NaN → imputer 위임 (혈압값이 있으면 derived.py 가 이미 파생).
+        "hypertension":      _safe_num(d.get("hypertension"), np.nan),
 
         # === 신체 계측 ===
         "HE_BMI":            bmi_,
@@ -465,9 +468,10 @@ def patient_to_features(patient_data: dict) -> dict:
         "HE_Usg":            _urine_raw(d.get("urine_sg")),
 
         # === 생활습관 === (v2.1.3 Codex C1: 안전 변환)
-        "smoking":           _safe_num(d.get("smoking"), 0.0),
-        "drinking":          _safe_num(d.get("drinking"), 0.0),
-        "exercise":          _safe_num(d.get("exercise"), 0.0),
+        # v2.3.0 (감사): 결측 생활습관을 0('안 함')으로 단정하지 않고 NaN → imputer 위임.
+        "smoking":           _safe_num(d.get("smoking"), np.nan),
+        "drinking":          _safe_num(d.get("drinking"), np.nan),
+        "exercise":          _safe_num(d.get("exercise"), np.nan),
         "sleep_7h":          sleep_7h,
     }
 
@@ -484,6 +488,12 @@ MID_RISK_FALLBACK = 30.0
 CPEP_MICRO_MILD = 1.0
 CPEP_MICRO_MEDIUM = 0.7
 CPEP_MICRO_STRONG = 0.5
+# v2.2.9: 'C-peptide 결핍/저기능 의심 → 최소 중위험' floor 임계.
+#   이론(0.5 nmol/L≈1.5 ng/mL)은 병원 C-peptide 참고범위 하한(1.0 ng/mL)과 충돌해
+#   (1.0~1.5 구간이 '참고범위상 정상'이자 '결핍 의심'이 됨) 졸업기준(1.3)·집중관리 목표까지
+#   floor 에 갇히는 문제가 있었다. 원장 결정: 병원 참고범위 하한과 동일한 1.0 으로 완화.
+#   → C-peptide < 1.0 ng/mL(참고범위 하한 미만)만 인슐린 분비능 저하로 보고 중위험 floor.
+CPEP_T1DM_SUSPECT = 1.0
 
 # 대혈관 (높을수록 인슐린저항성) — 원장님 답변 §1 C) HOMA-IR 4분위
 HOMA_IR_HIGH = 1.69      # KNHANES 당뇨환자 75th percentile (이대목동 2024 4분위)
@@ -629,23 +639,45 @@ def _attach_homa_ir_flag(predictions: dict, homa_ir: float) -> None:
 
 # ── v2.1.6 — 등급 안전망과 C-peptide/HOMA-IR 임상 flag 분리 ──
 # 안전망 7룰은 level floor 로 반영하고, C-peptide/HOMA-IR 신호는 clinical_flags 로만 표시한다.
-def apply_clinical_floor(predictions: dict, patient_data: dict) -> dict:
+ALL_CLINICAL_FLOOR_RULES = frozenset(range(1, 8))
+
+
+def _enabled_clinical_floor_rules(enabled_rules) -> frozenset[int]:
+    """호출별 임상 안전망 정책을 불변 집합으로 정규화한다."""
+    enabled = (
+        ALL_CLINICAL_FLOOR_RULES
+        if enabled_rules is None
+        else frozenset(enabled_rules)
+    )
+    unknown = enabled - ALL_CLINICAL_FLOOR_RULES
+    if unknown:
+        raise ValueError(f"알 수 없는 임상 안전망 rule: {sorted(unknown)}")
+    return enabled
+
+
+def apply_clinical_floor(
+    predictions: dict,
+    patient_data: dict,
+    enabled_rules=None,
+) -> dict:
     """
     임상 안전망 7룰 — v2.1.6 (원장님 5월 18일 답변 §2 반영).
 
     Rule 1: HbA1c ≥ 11% → 모든 합병증 무조건 고위험
     Rule 2: HbA1c ≥ 9%  → 모든 합병증 최소 중위험
-    Rule 3: C-pep < 0.5 → 모든 합병증 최소 중위험 (1형 의심)
+    Rule 3: C-pep < 1.0 ng/mL (참고범위 하한 미만) → 모든 합병증 최소 중위험 (인슐린 분비능 저하 의심, v2.2.9 원장 결정)
     Rule 4: DM 유병 ≥ 10년 AND HbA1c ≥ 8.5 → 모든 합병증 최소 중위험
     Rule 5: eGFR < 45 OR UACR ≥ 300 → 모든 합병증 무조건 고위험
     Rule 6: SBP ≥ 160 OR DBP ≥ 100 → 모든 합병증 최소 중위험
     Rule 7: LDL ≥ 190 → 모든 합병증 최소 중위험
 
     원칙:
-      - Rule 1/5 (고위험) 적용 시 모든 합병증 고위험 보장
+      - enabled_rules=None 이면 기존 정책(1~7) 전체 적용
+      - Rule 1/5 (고위험) 적용 시 모델 unavailable 포함 모든 합병증 고위험 보장
       - 이미 고위험인 합병증은 어떤 룰로도 강등 안 됨
       - raw_score 절대 변경 금지. level/clinical_floor_reasons/clinical_flags 만.
     """
+    enabled = _enabled_clinical_floor_rules(enabled_rules)
     hba1c = _as_float(patient_data.get("hba1c"))
     cpep = _as_float(patient_data.get("c_peptide"))
     dm_dur = _as_float(patient_data.get("dm_duration"))
@@ -656,7 +688,8 @@ def apply_clinical_floor(predictions: dict, patient_data: dict) -> dict:
     warning_flags: list[dict] = []
 
     # Rule 1: HbA1c ≥ 11% → 무조건 고위험
-    if hba1c is not None and hba1c >= 11.0:
+    rule1_triggered = 1 in enabled and hba1c is not None and hba1c >= 11.0
+    if rule1_triggered:
         force_high = True
         danger_flags.append({
             "type": "hba1c_very_high",
@@ -670,7 +703,7 @@ def apply_clinical_floor(predictions: dict, patient_data: dict) -> dict:
             floors.setdefault(disease, []).append(reason)
     else:
         # Rule 2: HbA1c ≥ 9% → 중위험 floor
-        if hba1c is not None and hba1c >= 9.0:
+        if 2 in enabled and hba1c is not None and hba1c >= 9.0:
             reason = "HbA1c ≥ 9% (조절 불량)"
             warning_flags.append({
                 "type": "hba1c_high",
@@ -682,13 +715,13 @@ def apply_clinical_floor(predictions: dict, patient_data: dict) -> dict:
             for disease in predictions.keys():
                 floors.setdefault(disease, []).append(reason)
 
-        # Rule 3: C-pep < 0.5 → 중위험 floor
-        if cpep is not None and cpep < 0.5:
-            reason = "C-peptide < 0.5 (1형 의심)"
+        # Rule 3: C-pep < 1.0 ng/mL (병원 참고범위 하한 미만) → 중위험 floor (v2.2.9, 원장 결정)
+        if 3 in enabled and cpep is not None and cpep < CPEP_T1DM_SUSPECT:
+            reason = "C-peptide < 1.0 ng/mL (참고범위 하한 미만 · 인슐린 분비능 저하 의심)"
             warning_flags.append({
                 "type": "cpep_floor",
                 "severity": "warning",
-                "message": f"C-peptide {cpep:.2f} ng/mL — 1형 의심 / 최소 중위험 안전망 적용",
+                "message": f"C-peptide {cpep:.2f} ng/mL (< 1.0 ng/mL 참고범위 하한) — 인슐린 분비능 저하 의심 / 최소 중위험 안전망 적용",
                 "source": "DCCT/EDIC",
                 "affects_level": True,
             })
@@ -696,7 +729,13 @@ def apply_clinical_floor(predictions: dict, patient_data: dict) -> dict:
                 floors.setdefault(disease, []).append(reason)
 
         # Rule 4: 유병 10년 이상 + HbA1c ≥ 8.5
-        if dm_dur is not None and dm_dur >= 10 and hba1c is not None and hba1c >= 8.5:
+        if (
+            4 in enabled
+            and dm_dur is not None
+            and dm_dur >= 10
+            and hba1c is not None
+            and hba1c >= 8.5
+        ):
             reason = "유병 10년 이상 + HbA1c ≥ 8.5"
             warning_flags.append({
                 "type": "long_duration_high_a1c",
@@ -709,83 +748,86 @@ def apply_clinical_floor(predictions: dict, patient_data: dict) -> dict:
                 floors.setdefault(disease, []).append(reason)
 
     # Rule 5: eGFR < 45 OR UACR ≥ 300 → 고위험
-    egfr = _as_float(patient_data.get("egfr"))
-    if egfr is None:
-        egfr = _as_float(patient_data.get("eGFR"))
-    if egfr is None:
-        cr = _as_float(patient_data.get("cr"))
-        age_val = _as_float(patient_data.get("age"))
-        sex_val = patient_data.get("sex")
-        if cr is not None and age_val is not None and sex_val is not None and cr > 0:
-            _nsx = normalize_sex(sex_val)
-            sex_code = 1 if _nsx == "M" else (2 if _nsx == "F" else None)
-            try:
-                egfr = _calc_egfr(cr, age_val, sex_code)
-            except Exception:
-                egfr = None
-    acr = _as_float(patient_data.get("acr"))
-    if acr is None:
-        acr = _as_float(patient_data.get("uacr"))
+    if 5 in enabled:
+        egfr = _as_float(patient_data.get("egfr"))
+        if egfr is None:
+            egfr = _as_float(patient_data.get("eGFR"))
+        if egfr is None:
+            cr = _as_float(patient_data.get("cr"))
+            age_val = _as_float(patient_data.get("age"))
+            sex_val = patient_data.get("sex")
+            if cr is not None and age_val is not None and sex_val is not None and cr > 0:
+                _nsx = normalize_sex(sex_val)
+                sex_code = 1 if _nsx == "M" else (2 if _nsx == "F" else None)
+                try:
+                    egfr = _calc_egfr(cr, age_val, sex_code)
+                except Exception:
+                    egfr = None
+        acr = _as_float(patient_data.get("acr"))
+        if acr is None:
+            acr = _as_float(patient_data.get("uacr"))
 
-    renal_reasons = []
-    if egfr is not None and egfr < 45:
-        renal_reasons.append(f"eGFR {egfr:.1f} < 45")
-    if acr is not None and acr >= 300:
-        renal_reasons.append(f"UACR {acr:.0f} ≥ 300")
-    if renal_reasons:
-        force_high = True
-        danger_flags.append({
-            "type": "renal_high_floor",
-            "severity": "danger",
-            "message": f"신장 기능 손상 ({', '.join(renal_reasons)}) — 무조건 고위험 안전망 적용",
-            "source": "Rule 5 (당뇨병성 신증 3단계 이상)",
-            "affects_level": True,
-        })
-        reason = "Rule 5: " + " + ".join(renal_reasons)
-        for disease in predictions.keys():
-            floors.setdefault(disease, []).append(reason)
+        renal_reasons = []
+        if egfr is not None and egfr < 45:
+            renal_reasons.append(f"eGFR {egfr:.1f} < 45")
+        if acr is not None and acr >= 300:
+            renal_reasons.append(f"UACR {acr:.0f} ≥ 300")
+        if renal_reasons:
+            force_high = True
+            danger_flags.append({
+                "type": "renal_high_floor",
+                "severity": "danger",
+                "message": f"신장 기능 손상 ({', '.join(renal_reasons)}) — 무조건 고위험 안전망 적용",
+                "source": "Rule 5 (당뇨병성 신증 3단계 이상)",
+                "affects_level": True,
+            })
+            reason = "Rule 5: " + " + ".join(renal_reasons)
+            for disease in predictions.keys():
+                floors.setdefault(disease, []).append(reason)
 
     # Rule 6: SBP ≥ 160 OR DBP ≥ 100 → 중위험
-    sbp = _as_float(patient_data.get("sbp"))
-    if sbp is None:
-        sbp = _as_float(patient_data.get("SBP"))
-    dbp = _as_float(patient_data.get("dbp"))
-    if dbp is None:
-        dbp = _as_float(patient_data.get("DBP"))
-    bp_reasons = []
-    if sbp is not None and sbp >= 160:
-        bp_reasons.append(f"SBP {sbp:.0f} ≥ 160")
-    if dbp is not None and dbp >= 100:
-        bp_reasons.append(f"DBP {dbp:.0f} ≥ 100")
-    if bp_reasons:
-        warning_flags.append({
-            "type": "severe_hypertension",
-            "severity": "warning",
-            "message": f"중증 고혈압 ({', '.join(bp_reasons)}) — 최소 중위험 안전망 적용",
-            "source": "Rule 6 (당뇨 + 중증 고혈압 → 뇌졸중 강력 위험인자)",
-            "affects_level": True,
-        })
-        reason = "Rule 6: " + " + ".join(bp_reasons)
-        for disease in predictions.keys():
-            floors.setdefault(disease, []).append(reason)
+    if 6 in enabled:
+        sbp = _as_float(patient_data.get("sbp"))
+        if sbp is None:
+            sbp = _as_float(patient_data.get("SBP"))
+        dbp = _as_float(patient_data.get("dbp"))
+        if dbp is None:
+            dbp = _as_float(patient_data.get("DBP"))
+        bp_reasons = []
+        if sbp is not None and sbp >= 160:
+            bp_reasons.append(f"SBP {sbp:.0f} ≥ 160")
+        if dbp is not None and dbp >= 100:
+            bp_reasons.append(f"DBP {dbp:.0f} ≥ 100")
+        if bp_reasons:
+            warning_flags.append({
+                "type": "severe_hypertension",
+                "severity": "warning",
+                "message": f"중증 고혈압 ({', '.join(bp_reasons)}) — 최소 중위험 안전망 적용",
+                "source": "Rule 6 (당뇨 + 중증 고혈압 → 뇌졸중 강력 위험인자)",
+                "affects_level": True,
+            })
+            reason = "Rule 6: " + " + ".join(bp_reasons)
+            for disease in predictions.keys():
+                floors.setdefault(disease, []).append(reason)
 
     # Rule 7: LDL ≥ 190 → 중위험
-    ldl = _as_float(patient_data.get("ldl"))
-    if ldl is None:
-        ldl = _as_float(patient_data.get("ldl_calc"))
-    if ldl is None:
-        ldl = _as_float(patient_data.get("LDL_calc"))
-    if ldl is not None and ldl >= 190:
-        warning_flags.append({
-            "type": "ldl_very_high",
-            "severity": "warning",
-            "message": f"LDL {ldl:.0f} ≥ 190 mg/dL — 가족성 고콜레스테롤혈증 수준 / 최소 중위험 안전망",
-            "source": "Rule 7 (초고위험 이상지질혈증)",
-            "affects_level": True,
-        })
-        reason = f"Rule 7: LDL {ldl:.0f} ≥ 190"
-        for disease in predictions.keys():
-            floors.setdefault(disease, []).append(reason)
+    if 7 in enabled:
+        ldl = _as_float(patient_data.get("ldl"))
+        if ldl is None:
+            ldl = _as_float(patient_data.get("ldl_calc"))
+        if ldl is None:
+            ldl = _as_float(patient_data.get("LDL_calc"))
+        if ldl is not None and ldl >= 190:
+            warning_flags.append({
+                "type": "ldl_very_high",
+                "severity": "warning",
+                "message": f"LDL {ldl:.0f} ≥ 190 mg/dL — 가족성 고콜레스테롤혈증 수준 / 최소 중위험 안전망",
+                "source": "Rule 7 (초고위험 이상지질혈증)",
+                "affects_level": True,
+            })
+            reason = f"Rule 7: LDL {ldl:.0f} ≥ 190"
+            for disease in predictions.keys():
+                floors.setdefault(disease, []).append(reason)
 
     # C-peptide 3단계 미세 flag 부착 (등급과 분리)
     if cpep is not None:
@@ -805,7 +847,11 @@ def apply_clinical_floor(predictions: dict, patient_data: dict) -> dict:
     # floor 적용
     for disease, reasons in floors.items():
         info = predictions.get(disease)
-        if not isinstance(info, dict) or not info.get("available"):
+        if not isinstance(info, dict):
+            continue
+        # Rule 1/5 는 모델 예측 가능 여부와 무관한 강제 고위험 안전망이다.
+        # 중위험 floor 는 모델 unavailable 응답의 예측불가 상태를 그대로 유지한다.
+        if not info.get("available") and not force_high:
             continue
         current_level = info.get("level")
         existing_reasons = info.get("clinical_floor_reasons") or []
@@ -833,7 +879,7 @@ def apply_clinical_floor(predictions: dict, patient_data: dict) -> dict:
     return predictions
 
 
-def clinical_floor_levels(patient_data: dict, diseases) -> dict:
+def clinical_floor_levels(patient_data: dict, diseases, enabled_rules=None) -> dict:
     """주어진 값으로 임상 안전망 7룰이 강제하는 '최소 등급'만 계산한다.
 
     점수/모델 예측 없이 floor 등급만 필요할 때 사용 (예: 시나리오 집중관리에서
@@ -843,13 +889,14 @@ def clinical_floor_levels(patient_data: dict, diseases) -> dict:
     Args:
         patient_data: hba1c/c_peptide/egfr/sbp/dbp/ldl/dm_duration 등 평가할 값.
         diseases: 등급을 받을 질환 키 목록 (predict_all 의 full name 권장).
+        enabled_rules: 적용할 임상 안전망 번호. None 이면 기존 1~7 전체.
 
     Returns:
         {disease: '고위험'|'중위험'|None}.  None = 해당 질환 안전망 미발동.
     """
     stub = {d: {"available": True, "level": "저위험", "raw_score": 0.0} for d in diseases}
     try:
-        apply_clinical_floor(stub, patient_data)
+        apply_clinical_floor(stub, patient_data, enabled_rules=enabled_rules)
     except Exception as e:
         logger.error("[SAFETY] clinical_floor_levels 실패: %s", e)
         return {d: None for d in diseases}
@@ -901,6 +948,52 @@ def _unavailable_prediction(name: str, reason: str = "model_unavailable") -> dic
         "risk_source": "unavailable",
         "risk_sources": [],
         "error": reason,
+        "clinical_flags": [],
+    }
+
+
+# v2.2.8 (병원 정책 — 완전한 기록만 예측, 추정 금지):
+#   예측에 필요한 핵심 임상값이 하나라도 없으면 KNHANES 추정으로 채우지 않고 예측 자체를 거부한다.
+#   ManualPatientForm.jsx 의 required 와 일치. (소변/생활습관/간효소 등 보조지표는 제외)
+REQUIRED_CLINICAL_FIELDS = [
+    ("age", "나이"), ("sex", "성별"),
+    ("hba1c", "당화혈색소"), ("fbg", "공복혈당"), ("c_peptide", "C-peptide"),
+    ("total_cholesterol", "총콜레스테롤"), ("triglycerides", "중성지방"), ("hdl", "HDL"),
+    ("cr", "크레아티닌"),
+    ("sbp", "수축기혈압"), ("dbp", "이완기혈압"),
+    ("height", "키"), ("weight", "몸무게"),
+]
+
+
+def missing_required_fields(patient_data: dict) -> list:
+    """필수 임상값 중 결측(없음/빈값/비수치)인 항목의 한글 라벨 목록. 비어 있으면 완전한 기록."""
+    missing = []
+    for key, label in REQUIRED_CLINICAL_FIELDS:
+        v = patient_data.get(key)
+        if key == "sex":
+            if normalize_sex(v) is None:
+                missing.append(label)
+        elif _safe_num(v, None) is None:
+            missing.append(label)
+    return missing
+
+
+def _insufficient_prediction(name: str, missing: list) -> dict:
+    """필수 검사 누락 — 추정으로 채우지 않고 '데이터 부족'을 명확히 반환.
+
+    _unavailable_prediction(모델 로드 실패)과 구분: risk_source='insufficient_data'.
+    UI 는 이 값을 보고 '필수 검사 부족(누락: …)' 을 표시하고, 예측 점수는 내지 않는다.
+    """
+    return {
+        "score": None,
+        "raw_score": None,
+        "level": None,
+        "available": False,
+        "model_threshold": None,
+        "risk_source": "insufficient_data",
+        "risk_sources": [],
+        "error": "insufficient_data",
+        "missing_required": missing,
         "clinical_flags": [],
     }
 
@@ -1127,17 +1220,24 @@ def _normalize_age_duration(patient_data: dict) -> dict:
     return d
 
 
-def predict_all(patient_data: dict) -> dict:
-    """6개 알고리즘 전체 예측. v2.1.2 — KNHANES 동일 연령대 percentile 자동 주입."""
+def predict_all(patient_data: dict, enabled_rules=None) -> dict:
+    """6개 알고리즘 전체 예측. enabled_rules=None 은 기존 1~7 안전망 전체."""
     # v2.2.2 (H3): 현재 age/dm_duration 정규화 → features/floor/percentile 전부 일관.
     patient_data = _normalize_age_duration(patient_data)
-    features = patient_to_features(patient_data)
 
     # v2.1.7 — 6개 모델 모두 ML 추론 (신규 3개 패키지 _load_model 에서 unwrap)
     all_models = [
-        "kidney_disease", "retinopathy", "cardiovascular",
-        "neuropathy", "dementia", "cerebrovascular",
+        "neuropathy", "retinopathy", "kidney_disease",
+        "cardiovascular", "cerebrovascular", "dementia",
     ]
+
+    # v2.2.8 (병원 정책): 필수 임상값이 하나라도 없으면 추정으로 채우지 않고 예측을 거부한다.
+    #   완전한 검사 기록만 예측 — 6개 합병증 전부 '데이터 부족'으로 반환하고 imputer 경로를 타지 않는다.
+    missing = missing_required_fields(patient_data)
+    if missing:
+        return {name: _insufficient_prediction(name, missing) for name in all_models}
+
+    features = patient_to_features(patient_data)
 
     result = {}
     for name in all_models:
@@ -1156,7 +1256,7 @@ def predict_all(patient_data: dict) -> dict:
     # v2.1.4 — 강한 임상 안전망(HbA1c ≥ 11%)만 마지막에 최소 등급 보장.
     # 이 단계 실패 = HbA1c≥11 고위험 등 안전망 미적용 → 위험도 과소표시 가능 → 반드시 표면화.
     try:
-        apply_clinical_floor(result, patient_data)
+        apply_clinical_floor(result, patient_data, enabled_rules=enabled_rules)
     except Exception as e:
         logger.error("[SAFETY] apply_clinical_floor 실패 — 임상 안전망 미적용: %s", e)
         for info in result.values():
@@ -1183,23 +1283,48 @@ def predict_all(patient_data: dict) -> dict:
     return result
 
 
-def predict_with_simulation(patient_data: dict, c_peptide: float, hba1c: float) -> dict:
+def predict_with_simulation(
+    patient_data: dict,
+    c_peptide: float,
+    hba1c: float,
+    enabled_rules=None,
+) -> dict:
     """
     c_peptide, hba1c 값을 오버라이드하여 재예측.
 
     v2.0.3 — 슬라이더 변화가 ML 출력에 더 잘 반영되도록 다음을 함께 갱신:
-      - fbg (공복혈당): ADAG 휴리스틱 fbg ≈ 18 × HbA1c (HbA1c 7.0 → 126 mg/dL)
+      - fbg (공복혈당): 슬라이더 HbA1c 에 맞춰 갱신 (아래 v2.3.0 규칙)
         glu / HOMA_IR / TyG_index / HOMA_beta / BMI_HOMA_IR 가 슬라이더 따라 움직임.
       - he_insulin: c_peptide × 3.0 (구 모델 호환용 저장)
+
+    v2.3.0 (감사): 이전엔 실측 fbg 를 무조건 18×HbA1c 로 덮어써, 슬라이더를 환자
+    현재값에 둔 채 시뮬레이션해도 predict_all(실측 fbg) 결과와 어긋났다
+    (Dashboard ↔ RiskAnalysis 기준 위험도 불일치). 이제:
+      - 실측 fbg + 실측 HbA1c 가 있으면 ADAG eAG(28.7×A1c−46.7) 비율로 실측 fbg 를
+        스케일 → 슬라이더 = 현재값이면 fbg 도 실측값 그대로 (baseline 일치).
+      - 실측이 없으면 ADAG eAG 공식으로 직접 추정 (구 18×A1c 근사보다 정확).
     """
     modified = dict(patient_data)
     modified["c_peptide"] = c_peptide
     modified["hba1c"] = hba1c
 
-    # HbA1c → 공복혈당 휴리스틱 (단순 비례, ADAG 기반 근사). 70 mg/dL 하한.
-    modified["fbg"] = max(70.0, 18.0 * hba1c)
+    def _eag(a1c: float) -> float:
+        # ADAG(2008): eAG(mg/dL) = 28.7 × HbA1c − 46.7
+        return 28.7 * a1c - 46.7
+
+    base_hba1c = _safe_num(patient_data.get("hba1c"), None)
+    base_fbg = _safe_num(patient_data.get("fbg"), None)
+    if base_fbg is not None and base_fbg > 0 and base_hba1c is not None and _eag(base_hba1c) > 0:
+        est_fbg = base_fbg * (_eag(hba1c) / _eag(base_hba1c))
+    else:
+        est_fbg = _eag(hba1c)
+    # 비율 스케일이 모순 입력(예: HbA1c 5.0 + FBG 600)에서 폭증하지 않도록 상·하한을
+    # 시뮬레이션 HbA1c 의 eAG 주변으로 묶는다. 그 위에 생리적 절대 범위도 적용.
+    eag_target = max(70.0, _eag(hba1c))
+    est_fbg = min(max(est_fbg, eag_target * 0.6), eag_target * 1.6)
+    modified["fbg"] = min(500.0, max(70.0, est_fbg))
 
     # v2.2 모델은 C_peptide 단위 학습이지만, 다른 파생경로 호환을 위해
     # he_insulin 동기화 (모델 입력 시점에는 patient_to_features 가 c_peptide 우선 사용).
     modified["he_insulin"] = c_peptide * 3.0
-    return predict_all(modified)
+    return predict_all(modified, enabled_rules=enabled_rules)

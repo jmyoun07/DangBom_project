@@ -114,6 +114,36 @@ def apply_lightweight_migrations() -> None:
                     conn.execute(text(f"ALTER TABLE patients ADD COLUMN {col} {sqltype}"))
                     print(f"[MIGRATION] patients.{col} ({sqltype}) 추가됨")
 
+        # ── 항목6: measurement_history.bmi 추가 (BMI 추이 차트용) ──
+        #   과거 측정에는 BMI 실측이 없으므로 backfill 하지 않고 NULL 유지(가짜 flat 추이 방지).
+        #   신규 업로드/수기 등록분부터 실제 BMI 가 기록된다. (codex+리뷰 검수 반영)
+        if inspector.has_table("measurement_history"):
+            mh_cols = {c["name"] for c in inspector.get_columns("measurement_history")}
+            if "bmi" not in mh_cols:
+                with engine.begin() as conn:
+                    conn.execute(text("ALTER TABLE measurement_history ADD COLUMN bmi FLOAT"))
+                    print("[MIGRATION] measurement_history.bmi 추가 (과거행 NULL 유지)")
+            # v2.2.9: 방문별 전체 검사값 JSON (검사이력 페이지 — 방문별 전체 패널/위험도 산출용)
+            if "snapshot" not in mh_cols:
+                with engine.begin() as conn:
+                    conn.execute(text("ALTER TABLE measurement_history ADD COLUMN snapshot TEXT"))
+                    print("[MIGRATION] measurement_history.snapshot 추가 (과거행 NULL — 백필로 최신 방문 채움)")
+
+        # ── 졸업자 데이터 보강 컬럼 (병원 6/13: C-peptide·eGFR·합병증 전/후) ──
+        if inspector.has_table("graduates"):
+            g_cols = {c["name"] for c in inspector.get_columns("graduates")}
+            g_needed = {
+                "egfr": "FLOAT", "cpep_before": "FLOAT", "cpep_after": "FLOAT",
+                "egfr_before": "FLOAT", "egfr_after": "FLOAT",
+                "comp_before": "VARCHAR", "comp_after": "VARCHAR",
+            }
+            g_missing = {k: v for k, v in g_needed.items() if k not in g_cols}
+            if g_missing:
+                with engine.begin() as conn:
+                    for col, sqltype in g_missing.items():
+                        conn.execute(text(f"ALTER TABLE graduates ADD COLUMN {col} {sqltype}"))
+                print(f"[MIGRATION] graduates 컬럼 추가: {list(g_missing)}")
+
         # patient_audit 테이블 생성 (N2)
         # — Base.metadata.create_all 이 새 테이블을 자동 생성하지만,
         #   기존 DB 에 명시적으로 보장하기 위해 한 번 더 호출.
@@ -239,18 +269,20 @@ class Patient(Base):
     urine_ph = Column(Float)        # pH
     urine_sg = Column(Float)        # 요비중 (1.005~1.030)
 
-    # 과거력 / 생활습관 (0/1)
-    hypertension = Column(Integer, default=0)
-    smoking = Column(Integer, default=0)
-    drinking = Column(Integer, default=0)
-    exercise = Column(Integer, default=0)
+    # 과거력 / 생활습관 (0/1, 미상=NULL)
+    # v2.3.0 (감사): default=0 은 '측정 안 함'을 '없음'으로 단정해 모델의 결측 처리
+    #   (KNNImputer)를 무력화했다 → NULL 허용. 기존 행의 0 값은 그대로 유지된다.
+    hypertension = Column(Integer)
+    smoking = Column(Integer)
+    drinking = Column(Integer)
+    exercise = Column(Integer)
     sleep_hours = Column(Float)          # 하루 평균 수면시간(시간) — >=7 이면 sleep_7h=1
 
     # 당뇨 관련
     dm_diagnosis_age = Column(Integer)
     dm_duration = Column(Integer)
-    dm_medication = Column(Integer, default=0)         # 당뇨약 복용 여부
-    insulin_medication = Column(Integer, default=0)    # 인슐린 투약 여부
+    dm_medication = Column(Integer)         # 당뇨약 복용 여부 (미상=NULL, v2.3.0)
+    insulin_medication = Column(Integer)    # 인슐린 투약 여부 (미상=NULL, v2.3.0)
 
     # 기타 (모델에는 포함 안 되지만 병원에서 수집)
     visceral_fat = Column(Float)     # 내장지방 레벨
@@ -293,6 +325,8 @@ class MeasurementHistory(Base):
     c_peptide = Column(Float)
     hba1c = Column(Float)
     cr = Column(Float)
+    bmi = Column(Float)   # 항목6: BMI 추이 차트용 (업로드 시 파생 BMI 저장)
+    snapshot = Column(String)   # v2.2.9: 방문 시점 전체 검사값 JSON (검사이력 페이지 — 전체 패널/방문별 위험도)
 
     patient = relationship("Patient", back_populates="measurements")
 
@@ -313,6 +347,37 @@ class PatientAudit(Base):
     old_value = Column(String)   # JSON-safe 문자열 (None 가능)
     new_value = Column(String)
     actor = Column(String, default="system")  # 추후 인증 도입 시 사용자 ID
+
+
+class Graduate(Base):
+    """전지점 졸업자 데이터 (유사사례 분석용).
+    Settings 에서 엑셀('졸업자 리스트' 시트)을 업로드하면 services/graduates.py 가
+    파싱해 이 테이블을 통째로 교체한다. 합병증 위험점수 전/후·C-peptide·GFR 은
+    원본 엑셀에 없어 추후 데이터 보강 시 연결한다(현재 None)."""
+    __tablename__ = "graduates"
+
+    id = Column(Integer, primary_key=True, index=True, autoincrement=True)
+    chart_no = Column(String, index=True)
+    name = Column(String)
+    sex = Column(String)                  # 'M' / 'F'
+    age = Column(Integer)                 # 결제일 기준 나이
+    treatment_months = Column(Integer)    # 한약복용기간(개월) = 치료기간
+    dm_duration_months = Column(Integer)  # 유병기간(개월차)
+    init_bmi = Column(Float)              # 초진 BMI
+    dm_med_count = Column(Float)          # 당뇨약 개수 (숫자만, 아니면 None)
+    hba1c_before = Column(Float)          # 치료전 HbA1c
+    hba1c_after = Column(Float)           # 치료후 HbA1c
+    hba1c_drop = Column(Float)            # 감소 차이
+    neuro_improve = Column(String)        # 당뇨발저림 호전 정도
+    goal = Column(String)                 # 목표 (당뇨초기 / 완치 등)
+    # ── 데이터 보강 필드 (병원 6/13 피드백: 졸업자 전/후 데이터) ──
+    egfr = Column(Float)                  # 신장기능 (GFR<60 신장 호전 사례용, 단일값 하위호환)
+    cpep_before = Column(Float)           # C-peptide 치료전
+    cpep_after = Column(Float)            # C-peptide 치료후
+    egfr_before = Column(Float)           # eGFR 치료전 (신장 회복 사례용)
+    egfr_after = Column(Float)            # eGFR 치료후
+    comp_before = Column(String)          # 합병증 위험도 전 (JSON: {neuro,retina,kidney,cardio,cerebro,dementia})
+    comp_after = Column(String)           # 합병증 위험도 후 (JSON)
 
 
 # ── Seed Data ─────────────────────────────────────────────────
@@ -407,6 +472,7 @@ def create_seed_data():
                     c_peptide=max(0.5, p.c_peptide + _rand(-0.5, 0.5)),
                     hba1c=max(5.0, p.hba1c + _rand(-0.3, 0.3)),
                     cr=max(0.4, p.cr + _rand(-0.2, 0.2)),
+                    bmi=max(16.0, (p.bmi or 23.0) + _rand(-1.0, 1.0)),
                 )
                 db.add(mh)
 

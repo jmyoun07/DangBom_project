@@ -2,9 +2,10 @@ import { useEffect, useState } from 'react';
 import { useLocation } from 'react-router-dom';
 import { Stethoscope } from 'lucide-react';
 import axios from 'axios';
+import { API_SERVER_ROOT } from '../../api/client';
 
-// /health 는 /api/v1 prefix 가 없으므로 baseURL 우회
-const HEALTH_URL = import.meta.env.DEV ? 'http://localhost:8000/health' : '/health';
+// /health 는 /api/v1 prefix 가 없으므로 baseURL 우회 — 호스트/포트 규칙은 api/client.js 와 단일 소스 공유
+const HEALTH_URL = `${API_SERVER_ROOT}/health`;
 
 const PAGE_TITLES = {
   '/home': { title: 'CSV 데이터 업로드', subtitle: '환자 데이터를 불러와 분석을 시작하세요' },
@@ -17,6 +18,8 @@ function resolveTitle(pathname) {
   if (PAGE_TITLES[pathname]) return PAGE_TITLES[pathname];
   if (pathname.startsWith('/dashboard/')) return { title: '환자 대시보드', subtitle: '합병증 위험 영역별 현황' };
   if (pathname.startsWith('/patients/')) return { title: '환자 상세 정보', subtitle: '검사 수치 및 AI 예측 결과' };
+  if (pathname.startsWith('/exam-history/')) return { title: '검사 이력', subtitle: '회차별 검사 수치 기록' };
+  if (pathname.startsWith('/report/')) return { title: '통합 리포트', subtitle: '환자 종합 분석 리포트' };
   if (pathname.startsWith('/risk-analysis/')) return { title: '시나리오 분석', subtitle: 'C-peptide / HbA1c 시뮬레이션' };
   if (pathname.startsWith('/case-comparison/')) return { title: '유사 사례 비교', subtitle: 'AI 기반 성공 사례 매칭' };
   return { title: 'DB-care', subtitle: '' };
@@ -97,7 +100,7 @@ export default function Header() {
 
       <div className="flex items-center gap-4">
         <StatusIndicator status={health.status} latencyMs={health.latencyMs} />
-        <span className="text-[11px] text-gray-400 font-mono">v2.1.6</span>
+        <span className="text-[11px] text-gray-400 font-mono">v2.2.9</span>
       </div>
     </header>
   );

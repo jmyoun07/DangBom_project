@@ -1,6 +1,6 @@
-import { useState } from 'react';
-import { Save, Trash2, Download as DownloadIcon, Palette, Database, AlertTriangle, CheckCircle, Sparkles, ShieldCheck, HardDriveDownload, Activity } from 'lucide-react';
-import api from '../api/client';
+import { useState, useEffect } from 'react';
+import { Save, Trash2, Download as DownloadIcon, Palette, Database, AlertTriangle, CheckCircle, Sparkles, ShieldCheck, HardDriveDownload, Activity, GraduationCap } from 'lucide-react';
+import api, { errorMessage } from '../api/client';
 import usePatientCount from '../hooks/usePatientCount';
 import { useTheme } from '../contexts/ThemeContext';
 import { useToast } from '../contexts/ToastContext';
@@ -23,12 +23,37 @@ export default function Settings() {
   const confirm = useConfirm();
   const [clearing, setClearing] = useState(false);
   const [backingUp, setBackingUp] = useState(false);
+  const [gradCount, setGradCount] = useState(null);
+  const [gradUploading, setGradUploading] = useState(false);
+
+  useEffect(() => {
+    api.get('/graduates/count').then((r) => setGradCount(r.data?.data?.count ?? 0)).catch(() => setGradCount(0));
+  }, []);
+
+  const handleGradUpload = async (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    setGradUploading(true);
+    try {
+      const fd = new FormData();
+      fd.append('file', file);
+      const res = await api.post('/graduates/upload', fd, { timeout: 120000 });
+      const n = res.data?.data?.loaded ?? 0;
+      setGradCount(n);
+      toast.success(`졸업자 ${n}명 데이터를 불러왔습니다.`, { title: '업로드 완료' });
+    } catch (err) {
+      toast.error(errorMessage(err, '졸업자 엑셀 업로드 실패'), { title: '업로드 실패' });
+    } finally {
+      setGradUploading(false);
+    }
+  };
 
   const update = (key, value) => {
     setSettings((prev) => {
       const next = { ...prev, [key]: value };
       if (key === 'accentColor' || key === 'density') {
-        try { localStorage.setItem('dbcare.settings.v1', JSON.stringify(next)); } catch (e) { /* noop */ }
+        try { localStorage.setItem('dbcare.settings.v1', JSON.stringify(next)); } catch { /* noop */ }
       }
       return next;
     });
@@ -52,7 +77,9 @@ export default function Settings() {
   };
 
   const backupPatients = async () => {
-    if ((count ?? 0) === 0) {
+    // v2.2.9 (#7): count===0(\uD655\uC2E4\uD788 \uC5C6\uC74C)\uC77C \uB54C\uB9CC \uCC28\uB2E8. \uC11C\uBC84 \uC624\uB958(count=null)\uBA74 \uBC31\uC5C5\uC744 \uC2DC\uB3C4\uD55C\uB2E4
+    //   \u2014 \uC2E4\uC81C \uB370\uC774\uD130\uAC00 \uC788\uB294\uB370 count \uC870\uD68C\uB9CC \uC2E4\uD328\uD55C \uACBD\uC6B0 \uBC31\uC5C5\uC774 \uB9C9\uD788\uC9C0 \uC54A\uB3C4\uB85D. (\uBE48 DB \uBA74 \uBC31\uC5D4\uB4DC\uAC00 404)
+    if (count === 0) {
       toast.info('\uBC31\uC5C5\uD560 \uD658\uC790 \uB370\uC774\uD130\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4.');
       return;
     }
@@ -62,16 +89,19 @@ export default function Settings() {
       const blob = new Blob([res.data], { type: 'text/csv;charset=utf-8;' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
-      const today = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '').slice(0, 15);
+      // v2.2.9 (#23): 파일명 날짜를 UTC(toISOString)가 아닌 로컬 시각 기준으로
+      const d = new Date();
+      const pad = (n) => String(n).padStart(2, '0');
+      const today = `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}_${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
       a.href = url;
       a.download = `dbcare_patients_backup_${today}.csv`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
-      toast.success(`${count}\uBA85\uC758 \uD658\uC790 \uB370\uC774\uD130\uAC00 CSV\uB85C \uC800\uC7A5\uB418\uC5C8\uC2B5\uB2C8\uB2E4.`, { title: '\uBC31\uC5C5 \uC644\uB8CC' });
+      toast.success('\uD658\uC790 \uB370\uC774\uD130\uAC00 CSV\uB85C \uC800\uC7A5\uB418\uC5C8\uC2B5\uB2C8\uB2E4.', { title: '\uBC31\uC5C5 \uC644\uB8CC' });
     } catch (e) {
-      toast.error(e.response?.data?.detail || e.message, { title: '\uBC31\uC5C5 \uC2E4\uD328' });
+      toast.error(errorMessage(e), { title: '백업 실패' });
     } finally {
       setBackingUp(false);
     }
@@ -92,10 +122,10 @@ export default function Settings() {
       const res = await api.delete('/patients');
       const deleted = res.data?.data?.deleted_count || 0;
       toast.success(`${deleted}\uBA85\uC758 \uD658\uC790 \uB370\uC774\uD130\uAC00 \uC0AD\uC81C\uB418\uC5C8\uC2B5\uB2C8\uB2E4.`, { title: '\uC0AD\uC81C \uC644\uB8CC' });
-      try { localStorage.removeItem('dbcare.recentPatients.v1'); } catch {}
+      try { localStorage.removeItem('dbcare.recentPatients.v1'); } catch { /* 무시 */ }
       setTimeout(() => window.location.reload(), 1200);
     } catch (e) {
-      toast.error(e.response?.data?.detail || e.message, { title: '\uC0AD\uC81C \uC2E4\uD328' });
+      toast.error(errorMessage(e), { title: '삭제 실패' });
     } finally {
       setClearing(false);
     }
@@ -180,7 +210,7 @@ export default function Settings() {
                 className="w-4 h-4"
                 style={{ accentColor: 'var(--db-accent)' }}
               />
-              <span className="text-xs text-gray-700">{'\uC601\uBB38 \uD569\uBCD1\uC99D\uBA85 \uD568\uAED8 \uD45C\uC2DC (Dashboard)'}</span>
+              <span className="text-xs text-gray-700">{'영문 합병증명 함께 표시 (합병증 카드)'}</span>
             </label>
           </div>
         </section>
@@ -216,7 +246,7 @@ export default function Settings() {
             </div>
             <button
               onClick={backupPatients}
-              disabled={backingUp || (count ?? 0) === 0}
+              disabled={backingUp || count === 0}
               className="flex items-center gap-2 px-4 py-2 bg-white border border-emerald-300 text-emerald-700 rounded-lg text-xs font-semibold hover:bg-emerald-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
             >
               <HardDriveDownload size={14} />
@@ -226,12 +256,29 @@ export default function Settings() {
 
           {/* CSV 템플릿 */}
           <a
-            href="http://localhost:8000/api/v1/upload/template"
+            href={`${api.defaults.baseURL}/upload/template`}
             className="flex items-center gap-2 px-4 py-2 border border-gray-200 text-gray-700 rounded-lg text-xs font-semibold hover:bg-gray-50 transition-colors mb-4 w-fit"
           >
             <DownloadIcon size={14} />
             {'CSV \uC5C5\uB85C\uB4DC \uD15C\uD50C\uB9BF \uB2E4\uC6B4\uB85C\uB4DC'}
           </a>
+
+          {/* 졸업자 데이터 (유사사례 분석 소스) */}
+          <div className="border-t border-gray-100 pt-4 mb-4">
+            <p className="text-xs font-bold text-gray-700 mb-1 flex items-center gap-1">
+              <GraduationCap size={13} /> {'졸업자 데이터 (유사사례 분석)'}
+            </p>
+            <p className="text-xs text-gray-500 mb-3 leading-relaxed">
+              {"전지점 졸업자 통계 엑셀(.xlsx, '졸업자 리스트' 시트)을 업로드하면 유사사례 분석에 사용됩니다. 현재 "}
+              <span className="font-semibold text-gray-700">{gradCount == null ? '…' : `${gradCount}명`}</span>
+              {' 등록됨. 새 파일로 교체됩니다.'}
+            </p>
+            <label className="inline-flex items-center gap-2 px-4 py-2 border border-accent/40 text-accent rounded-lg text-xs font-semibold hover:bg-accent-soft transition-colors cursor-pointer w-fit">
+              <HardDriveDownload size={14} />
+              {gradUploading ? '업로드 중…' : '졸업자 엑셀 업로드'}
+              <input type="file" accept=".xlsx" className="hidden" onChange={handleGradUpload} disabled={gradUploading} />
+            </label>
+          </div>
 
           {/* 위험 구역 */}
           <div className="border-t border-red-100 pt-4">
@@ -244,7 +291,7 @@ export default function Settings() {
             </p>
             <button
               onClick={clearAllPatients}
-              disabled={clearing || (count ?? 0) === 0}
+              disabled={clearing || !(count > 0)}
               className="flex items-center gap-2 px-4 py-2 bg-red-50 text-red-600 border border-red-200 rounded-lg text-xs font-semibold hover:bg-red-100 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
             >
               <Trash2 size={14} />

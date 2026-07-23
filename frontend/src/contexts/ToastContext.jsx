@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useCallback } from 'react';
+import { createContext, useContext, useState, useCallback, useMemo, useEffect, useRef } from 'react';
 import { CheckCircle2, AlertCircle, Info, X } from 'lucide-react';
 
 const ToastContext = createContext(null);
@@ -7,8 +7,15 @@ let _id = 0;
 
 export function ToastProvider({ children }) {
   const [toasts, setToasts] = useState([]);
+  // 자동 닫힘 타이머 추적 — unmount 시 일괄 정리 (setState-after-unmount 방지)
+  const timersRef = useRef(new Map());
 
   const remove = useCallback((id) => {
+    const timer = timersRef.current.get(id);
+    if (timer) {
+      clearTimeout(timer);
+      timersRef.current.delete(id);
+    }
     setToasts((list) => list.filter((t) => t.id !== id));
   }, []);
 
@@ -16,17 +23,28 @@ export function ToastProvider({ children }) {
     const id = ++_id;
     const duration = opts.duration ?? (type === 'error' ? 6000 : 3200);
     setToasts((list) => [...list, { id, type, message, title: opts.title }]);
-    if (duration > 0) setTimeout(() => remove(id), duration);
+    if (duration > 0) {
+      timersRef.current.set(id, setTimeout(() => remove(id), duration));
+    }
     return id;
   }, [remove]);
 
-  const toast = {
+  useEffect(() => {
+    const timers = timersRef.current;
+    return () => {
+      timers.forEach(clearTimeout);
+      timers.clear();
+    };
+  }, []);
+
+  // Provider value 안정화 — 렌더마다 새 객체가 내려가 소비자가 불필요하게 재렌더되는 것 방지
+  const toast = useMemo(() => ({
     success: (msg, opts) => push('success', msg, opts),
     error: (msg, opts) => push('error', msg, opts),
     info: (msg, opts) => push('info', msg, opts),
     warn: (msg, opts) => push('warn', msg, opts),
     dismiss: remove,
-  };
+  }), [push, remove]);
 
   return (
     <ToastContext.Provider value={toast}>
@@ -60,6 +78,7 @@ export function ToastProvider({ children }) {
   );
 }
 
+// eslint-disable-next-line react-refresh/only-export-components
 export function useToast() {
   const ctx = useContext(ToastContext);
   if (!ctx) throw new Error('useToast must be used within ToastProvider');

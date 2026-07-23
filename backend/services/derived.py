@@ -18,9 +18,185 @@ v2.2 변경사항:
 """
 from __future__ import annotations
 
+import json
 import math
+import re
 from datetime import date, datetime
 from typing import Any
+
+# 저장 가능한 원본 임상 수치의 생리적/장비 측정 가능 범위.
+# 진단 기준이 아니라 명백한 OCR·단위·전사 오류를 막기 위한 넓은 화이트리스트다.
+CLINICAL_RANGES: dict[str, tuple[float, float]] = {
+    "hba1c": (3.0, 20.0),
+    "c_peptide": (0.01, 15.0),
+    "cr": (0.1, 15.0),
+    "bmi": (10.0, 60.0),
+    "fbg": (20.0, 600.0),
+    "sbp": (50.0, 260.0),
+    "dbp": (30.0, 160.0),
+    "total_cholesterol": (50.0, 600.0),
+    "triglycerides": (20.0, 2000.0),
+    "hdl": (10.0, 150.0),
+    "ldl": (10.0, 400.0),
+    "ldl_calc": (10.0, 400.0),  # Friedewald/실측 fallback도 LDL과 같은 저장 범위
+    "alt": (1.0, 2000.0),
+    "ast": (1.0, 2000.0),
+    "ggt": (1.0, 2000.0),
+    # v2.3.0 (감사): 음수 나이·키·몸무게 등 명백한 오입력이 그대로 저장되어
+    #   파생값(BMI·eGFR·나이계열)과 모델 입력을 오염시키던 문제 차단.
+    "age": (0.0, 120.0),
+    "height": (50.0, 250.0),
+    "weight": (10.0, 400.0),
+    "sleep_hours": (0.0, 24.0),
+    "dm_diagnosis_age": (0.0, 120.0),
+    # 이진 플래그 (0/1) — 범위 밖 값은 결측 처리 (임의 해석 금지)
+    "dm_medication": (0.0, 1.0),
+    "insulin_medication": (0.0, 1.0),
+    "hypertension": (0.0, 1.0),
+    "smoking": (0.0, 1.0),
+    "drinking": (0.0, 1.0),
+    "exercise": (0.0, 1.0),
+    "urine_nit": (0.0, 1.0),
+}
+
+# 정확히 0 또는 1 만 허용하는 이진 플래그 (0.5 같은 중간값 거부)
+BINARY_FIELDS: frozenset[str] = frozenset(
+    {
+        "dm_medication", "insulin_medication", "hypertension",
+        "smoking", "drinking", "exercise", "urine_nit",
+    }
+)
+
+# OCR 원본의 'YYYY-MM-00'을 월말 등으로 임의 보정하면 다른 방문과 합쳐질 수 있다.
+# 따라서 day=00은 추정하지 않고 명시적으로 거부한다.
+DATE_DAY_ZERO_POLICY = "reject"
+CLINICAL_DATE_FIELDS = frozenset({"exam_date", "measured_at", "dob"})
+_DAY_ZERO_RE = re.compile(r"^\s*\d{4}(?:[-/.]\d{1,2}[-/.]00|\d{2}00)(?:\D.*)?$")
+
+
+def validate_clinical_value(field: str, value: Any) -> tuple[Any | None, str | None]:
+    """화이트리스트 임상값 1개 검증. 비대상 필드는 원값을 그대로 반환한다."""
+    bounds = CLINICAL_RANGES.get(field)
+    if bounds is None or value is None:
+        return value, None
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return None, f"{field}: 숫자로 해석할 수 없는 값 {value!r}은 저장하지 않았습니다."
+    if not math.isfinite(numeric):
+        return None, f"{field}: 유한하지 않은 값 {value!r}은 저장하지 않았습니다."
+    low, high = bounds
+    if numeric < low or numeric > high:
+        return None, (
+            f"{field}: 값 {value!r}이 허용 범위 {low:g}~{high:g} 밖이어서 "
+            "저장하지 않았습니다."
+        )
+    # 0/1 이진 플래그는 범위 안이어도 중간값(0.5 등)을 허용하지 않는다 — 임의 해석 방지.
+    if field in BINARY_FIELDS and numeric not in (0.0, 1.0):
+        return None, (
+            f"{field}: 0 또는 1 이어야 하는 항목에 {value!r}이 들어와 저장하지 않았습니다."
+        )
+    return numeric, None
+
+
+def validate_clinical_date(
+    value: Any,
+    *,
+    field: str = "exam_date",
+    today: date | None = None,
+) -> tuple[date | None, str | None]:
+    """날짜 1개를 엄격 파싱하고 실재일·미래일·day=00 정책을 검사한다.
+
+    빈 값은 정상 결측(None)이다. 값이 있는데 파싱에 실패한 경우는 경고와 함께 None을
+    반환하므로 호출자는 입력 경로에서 해당 행/요청을 거부할 수 있다.
+    """
+    if value is None:
+        return None, None
+    if isinstance(value, datetime):
+        parsed = value.date()
+    elif isinstance(value, date):
+        parsed = value
+    else:
+        s = str(value).strip()
+        if not s:
+            return None, None
+        if DATE_DAY_ZERO_POLICY == "reject" and _DAY_ZERO_RE.match(s):
+            return None, f"{field}: 일(day)이 00인 날짜 {s!r}은 허용하지 않습니다."
+        parsed = None
+        for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%Y.%m.%d", "%Y%m%d"):
+            try:
+                parsed = datetime.strptime(s, fmt).date()
+                break
+            except ValueError:
+                continue
+        if parsed is None:
+            # 흔한 ISO datetime 문자열은 날짜 부분이 유효할 때만 수용한다.
+            try:
+                parsed = datetime.fromisoformat(s).date()
+            except (TypeError, ValueError):
+                return None, f"{field}: 실재하지 않거나 지원하지 않는 날짜 {s!r}입니다."
+
+    ref = today or date.today()
+    if parsed > ref:
+        return None, f"{field}: 미래 날짜 {parsed.isoformat()}은 허용하지 않습니다."
+    return parsed, None
+
+
+def sanitize_clinical_data(
+    data: dict,
+    *,
+    today: date | None = None,
+) -> tuple[dict, list[str]]:
+    """입력 dict의 임상값/날짜를 공용 정책으로 정제하고 경고 목록을 반환한다.
+
+    이상 수치는 키를 유지한 채 None으로 바꿔 호출자가 '측정하지 않은 값'처럼 다룰 수
+    있게 한다. 날짜 오류도 None으로 바꾸지만, 저장 API는 경고가 있으면 행/요청 자체를
+    거부해야 잘못된 날짜가 오늘로 대체되지 않는다.
+    """
+    out = dict(data)
+    warnings: list[str] = []
+    for field in CLINICAL_RANGES:
+        if field not in out:
+            continue
+        value, warning = validate_clinical_value(field, out.get(field))
+        out[field] = value
+        if warning:
+            warnings.append(warning)
+    for field in CLINICAL_DATE_FIELDS:
+        if field not in out:
+            continue
+        value, warning = validate_clinical_date(out.get(field), field=field, today=today)
+        out[field] = value
+        if warning:
+            warnings.append(warning)
+    return out, warnings
+
+# v2.2.9: 방문 시점 전체 검사값 스냅샷(JSON) — 검사이력 페이지에서 방문별 전체 패널/위험도 산출용.
+#   MeasurementHistory.snapshot 에 저장. 표시 + predict_all 재현에 필요한 입력 필드를 담는다.
+SNAPSHOT_FIELDS = [
+    "age", "sex", "dob", "exam_date",
+    "hba1c", "fbg", "c_peptide",
+    "total_cholesterol", "triglycerides", "hdl", "ldl",
+    "cr", "ast", "alt", "ggt",
+    "sbp", "dbp", "hypertension",
+    "height", "weight", "bmi", "visceral_fat",
+    "he_upro", "he_uglu", "he_ubld", "urine_bil", "urine_uro",
+    "urine_ket", "urine_nit", "urine_ph", "urine_sg",
+    "smoking", "drinking", "exercise", "sleep_hours",
+    "dm_diagnosis_age", "dm_duration", "dm_medication", "insulin_medication",
+]
+
+
+def visit_snapshot(data: dict) -> str:
+    """방문 시점 검사값 dict → 검증된 JSON 문자열. 날짜는 ISO 문자열로."""
+    clean, _ = sanitize_clinical_data(data)
+    out = {}
+    for k in SNAPSHOT_FIELDS:
+        v = clean.get(k)
+        if v is None:
+            continue
+        out[k] = v.isoformat() if isinstance(v, (date, datetime)) else v
+    return json.dumps(out, ensure_ascii=False)
 
 
 def _f(v: Any) -> float | None:
@@ -37,23 +213,9 @@ def _f(v: Any) -> float | None:
 
 
 def _to_date(v: Any) -> date | None:
-    """str/date/datetime → date. 실패 시 None."""
-    if v is None:
-        return None
-    if isinstance(v, datetime):
-        return v.date()
-    if isinstance(v, date):
-        return v
-    s = str(v).strip()
-    if not s:
-        return None
-    # ISO, slash, dot
-    for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%Y.%m.%d", "%Y%m%d"):
-        try:
-            return datetime.strptime(s, fmt).date()
-        except ValueError:
-            continue
-    return None
+    """str/date/datetime → 검증된 date. 실패·미래 날짜는 None."""
+    parsed, _ = validate_clinical_date(v)
+    return parsed
 
 
 def _age_from_dob(dob: date, on: date | None = None) -> int | None:
@@ -146,7 +308,9 @@ def compute_derived(data: dict) -> dict:
     Returns:
         파생값이 채워진 새 dict.
     """
-    out = dict(data)
+    # 라우터 밖의 재계산/조회 경로에서도 명백한 원본 outlier가 파생값으로 전파되지 않게 방어.
+    # 저장 경로는 호출 전 sanitizer에서 동일 경고를 수집한다.
+    out, _ = sanitize_clinical_data(data)
 
     # ── 나이 자동 계산 (DOB → age) ─────────────────────────
     # 병원 양식은 dob 를 필수로 받고 age 는 입력하지 않음.
@@ -210,8 +374,14 @@ def compute_derived(data: dict) -> dict:
         he_insulin = round(c_peptide * 3.0, 2)
         out["he_insulin"] = he_insulin
     # 역방향: c_peptide 가 없고 he_insulin 만 있으면 c_peptide 역추정 (구 데이터 호환)
+    # v2.3.0 (감사): 역추정값을 out 에 저장하지 않아 업로드 필수값 검사
+    #   (missing_required_fields)가 'C-peptide 누락'으로 행을 거부하던 문제 수정.
+    #   CLAUDE.md 하위호환 규칙(c_peptide = he_insulin / 3.0)대로 저장까지 수행한다.
     if c_peptide is None and he_insulin is not None:
-        c_peptide = round(he_insulin / 3.0, 2)
+        estimated_cpep = round(he_insulin / 3.0, 2)
+        c_peptide, _ = validate_clinical_value("c_peptide", estimated_cpep)
+        if c_peptide is not None and out.get("c_peptide") is None:
+            out["c_peptide"] = c_peptide
 
     # HOMA 지수 — v2.2 C-peptide 기반
     if fbg is not None and c_peptide is not None and fbg > 0:

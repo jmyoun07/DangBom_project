@@ -13,6 +13,7 @@ export const RISK_LEVELS = {
   LOW:  '\uC800\uC704\uD5D8',    // 저위험
   PENDING: '\uBD84\uC11D\uC911', // 분석중
   NOT_READY: '\uC900\ube44 \uc911', // 준비 중 (ML 미구현 모델용)
+  INSUFFICIENT: '데이터부족', // v2.2.8 병원정책 — 필수검사 누락(추정 안 함)
 };
 
 // 0-100 점수를 레벨 문자열로 — FALLBACK 전용.
@@ -99,6 +100,20 @@ export const RISK_COLORS = {
     icon:  '\u2026', // … 준비 중
     ariaLabel: '\uc900\ube44 \uc911',
   },
+  [RISK_LEVELS.INSUFFICIENT]: {
+    stroke: '#78716c',
+    fill:   '#a8a29e',
+    bgSoft: 'bg-gray-50',
+    textStrong: 'text-gray-700',
+    textSoft: 'text-gray-500',
+    border: 'border-gray-300',
+    badge: 'bg-gray-100 text-gray-600 border border-gray-300',
+    bar:   'bg-gray-300',
+    rgb:   'rgb(168, 162, 158)',
+    rgba:  (a) => `rgba(168, 162, 158, ${a})`,
+    icon:  '\u26A0', // ⚠ 데이터 부족
+    ariaLabel: '데이터부족',
+  },
 };
 
 export function riskColorFor(level) {
@@ -113,12 +128,12 @@ export const ACCENT = {
 
 // ── 합병증 한글 라벨 ─────────────────────────────────────────
 export const DISEASE_LABELS = {
+  neuro:    '\uB9D0\uCD08\uC2E0\uACBD\uBCD1\uC99D', // 말초신경병증
+  retina:   '\ub9dd\ub9c9\ubcd1\uc99d',     // 망막병증
   kidney:   '\uC2E0\uC7A5\uC9C8\uD658',     // 신장질환
   cardio:   '\uC2EC혈\uad00',           // 심혈관
   cerebro:  '\ub1cc혈\uad00',           // 뇌혈관
   dementia: '\uce58\ub9e4',                 // 치매
-  retina:   '\ub9dd\ub9c9\ubcd1\uc99d',     // 망막병증
-  neuro:    '\uc2e0\uacbd\ubcd1\uc99d',     // 신경병증
 };
 
 // ML 모델이 아직 배포되지 않은 합병증 (Radar/Risk 화면에서 '준비 중' 표시)
@@ -234,22 +249,70 @@ export function maskName(name, { mode = 'middle' } = {}) {
   return s[0] + '*'.repeat(s.length - 2) + s[s.length - 1];
 }
 
-// ── 정상 범위 참고치 (검사 수치 테이블의 '참고값' 열에 사용) ──
+// 성별 한글 표기 — 백엔드 normalize_sex 정책(미상/결측을 임의로 여성 처리하지 않음)과 일치.
+//   'M'/'F' 만 남/여로 표기하고, null·미상·레거시값('U','남성' 등)은 '미상'으로 둔다. (의료 리포트 왜곡 방지)
+export const sexKo = (s) => (s === 'M' ? '남' : s === 'F' ? '여' : '미상');
+
+// ── 정상 범위 참고치 + 판정 기준 (단일 소스) ──────────────────
+// 검사 수치 테이블(PatientDetail)의 '참고값' 표시(text)와 비고 판정(evaluate)이 모두 여기서 나온다.
+// 판정 라벨: '정상' | '주의' | '높음' | '낮음' | (BMI) '저체중' | '과체중' | '비만'
 export const REFERENCE_RANGES = {
-  hba1c:       '\u2264 5.6 (\uc815\uc0c1) / 5.7\u20136.4 (\uc8fc\uc758) / \u2265 6.5 (\ub2f9\ub1e8)',
-  c_peptide:   '1.0 \u2013 3.5 ng/mL',
-  glucose:     '70 \u2013 99 (\uacf5\ubcf5)',
-  ggt:         '\u2264 50 U/L',
-  alt:         '\u2264 40 U/L',
-  ast:         '\u2264 40 U/L',
-  cr:          '0.6 \u2013 1.2 mg/dL',
-  cholesterol: '\u2264 199 (\uc815\uc0c1) / 200\u2013239 (\uc8fc\uc758) / \u2265 240 (\ub192\uc74c)',
-  triglyceride:'\u2264 149',
-  hdl:         '\u2265 60 (\uc815\uc0c1) / 40\u201359 (\uc8fc\uc758) / < 40 (\ub0ae\uc74c)',
-  ldl:         '\u2264 129',
-  sbp:         '\u2264 119 (\uc815\uc0c1) / 120\u2013139 (\uc8fc\uc758) / \u2265 140 (\ub192\uc74c)',
-  dbp:         '\u2264 79 (\uc815\uc0c1) / 80\u201389 (\uc8fc\uc758) / \u2265 90 (\ub192\uc74c)',
-  bmi:         '18.5 \u2013 22.9 (\uc815\uc0c1) / 23\u201324.9 (\uacfc\uccb4\uc911) / \u2265 25 (\ube44\ub9cc)',
+  hba1c: {
+    text: '≤ 5.6 (정상) / 5.7–6.4 (주의) / ≥ 6.5 (당뇨)',
+    evaluate: (v) => v == null ? '' : v <= 5.6 ? '정상' : v <= 6.4 ? '주의' : '높음',
+  },
+  c_peptide: {
+    text: '1.0 – 3.5 ng/mL',
+    evaluate: (v) => v == null ? '' : v < 1.0 ? '낮음' : v <= 3.5 ? '정상' : '높음',
+  },
+  glucose: {
+    text: '70–99 (정상) / 100–125 (주의) / ≥ 126 (당뇨)',
+    evaluate: (v) => v == null ? '' : v < 70 ? '낮음' : v <= 99 ? '정상' : v <= 125 ? '주의' : '높음',
+  },
+  ggt: {
+    text: '≤ 50 U/L',
+    evaluate: (v) => v == null ? '' : v <= 50 ? '정상' : '높음',
+  },
+  alt: {
+    text: '≤ 40 U/L',
+    evaluate: (v) => v == null ? '' : v <= 40 ? '정상' : '높음',
+  },
+  ast: {
+    text: '≤ 40 U/L',
+    evaluate: (v) => v == null ? '' : v <= 40 ? '정상' : '높음',
+  },
+  cr: {
+    text: '0.6 – 1.2 mg/dL',
+    evaluate: (v) => v == null ? '' : v < 0.6 ? '낮음' : v <= 1.2 ? '정상' : '높음',
+  },
+  cholesterol: {
+    text: '≤ 199 (정상) / 200–239 (주의) / ≥ 240 (높음)',
+    evaluate: (v) => v == null ? '' : v <= 199 ? '정상' : v <= 239 ? '주의' : '높음',
+  },
+  triglyceride: {
+    text: '≤ 149 (정상) / 150–199 (주의) / ≥ 200 (높음)',
+    evaluate: (v) => v == null ? '' : v <= 149 ? '정상' : v <= 199 ? '주의' : '높음',
+  },
+  hdl: {
+    text: '≥ 60 (정상) / 40–59 (주의) / < 40 (낮음)',
+    evaluate: (v) => v == null ? '' : v >= 60 ? '정상' : v >= 40 ? '주의' : '낮음',
+  },
+  ldl: {
+    text: '≤ 129 (정상) / 130–159 (주의) / ≥ 160 (높음)',
+    evaluate: (v) => v == null ? '' : v <= 129 ? '정상' : v <= 159 ? '주의' : '높음',
+  },
+  sbp: {
+    text: '≤ 119 (정상) / 120–139 (주의) / ≥ 140 (높음)',
+    evaluate: (v) => v == null ? '' : v <= 119 ? '정상' : v <= 139 ? '주의' : '높음',
+  },
+  dbp: {
+    text: '≤ 79 (정상) / 80–89 (주의) / ≥ 90 (높음)',
+    evaluate: (v) => v == null ? '' : v <= 79 ? '정상' : v <= 89 ? '주의' : '높음',
+  },
+  bmi: {
+    text: '< 18.5 (저체중) / 18.5–22.9 (정상) / 23–24.9 (과체중) / ≥ 25 (비만)',
+    evaluate: (v) => v == null ? '' : v < 18.5 ? '저체중' : v <= 22.9 ? '정상' : v <= 24.9 ? '과체중' : '비만',
+  },
 };
 
 // ── 로깅 (개발환경 외에는 PHI 안 찍음) ────────────────────────

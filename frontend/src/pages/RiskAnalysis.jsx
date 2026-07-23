@@ -1,11 +1,12 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { RotateCcw, AlertCircle, Zap, ArrowRight, Lightbulb, Loader2, GraduationCap } from 'lucide-react';
-import api from '../api/client';
+import api, { errorMessage } from '../api/client';
 import RadarChart from '../components/RadarChart';
 import useDebounce from '../hooks/useDebounce';
 import usePatientCount from '../hooks/usePatientCount';
 import EmptyState from '../components/EmptyState';
+import { useTheme } from '../contexts/ThemeContext';
 import {
   RISK_LEVELS,
   riskColorFor,
@@ -49,6 +50,88 @@ const SYMPTOM_LEVEL_STYLE = {
   MEDIUM: { label: 'MEDIUM', bg: 'bg-amber-100',  text: 'text-amber-700',  bullet: 'text-amber-500',  rank: 2 },
   LOW:    { label: 'LOW',    bg: 'bg-emerald-100',text: 'text-emerald-700',bullet: 'text-emerald-500',rank: 1 },
 };
+
+const SYMPTOM_ORDER = ['retina', 'kidney', 'cardio'];
+const diseaseLabel = (k) => SYMPTOM_DISEASE_LABEL[k] || k;
+
+// 3개 카드(방치·집중·졸업) 하단 '전조증상/상태' 섹션을 동일 양식으로 통일.
+//   공통: 섹션 제목 + (질환 배지 + 설명) 행 리스트. 색만 카드 의미에 맞게 다르다.
+function ProdromeSection({ title, rows, emptyText, footnote }) {
+  return (
+    <div>
+      <p className="text-xs font-semibold text-gray-700 mb-2">{title}</p>
+      {rows.length > 0 ? (
+        <ul className="space-y-1.5">
+          {rows.map((r, i) => (
+            <li key={r.key || i} className="text-xs text-gray-700 flex items-start gap-1.5">
+              <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-bold tracking-wider shrink-0 mt-0.5 ${r.badgeClass}`}>
+                {r.label}
+              </span>
+              <span>{r.text}</span>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="text-[11px] text-gray-400 italic">{emptyText}</p>
+      )}
+      {footnote && <p className="text-[10px] text-gray-400 italic mt-2">{footnote}</p>}
+    </div>
+  );
+}
+
+// 방치: symptoms_by_disease(객체) → 질환 배지(최고 등급색) + 증상 나열
+function buildNeglectRows(neglect) {
+  const grouped = neglect?.symptoms_by_disease;
+  if (grouped && typeof grouped === 'object' && Object.keys(grouped).length > 0) {
+    return SYMPTOM_ORDER
+      .filter((k) => Array.isArray(grouped[k]) && grouped[k].length > 0)
+      .map((k) => {
+        const items = grouped[k];
+        const maxRank = Math.max(...items.map((s) => SYMPTOM_LEVEL_STYLE[s.level]?.rank || 1));
+        const badgeClass = maxRank >= 3 ? 'bg-red-100 text-red-700'
+          : maxRank === 2 ? 'bg-amber-100 text-amber-700' : 'bg-emerald-100 text-emerald-700';
+        return { key: k, label: diseaseLabel(k), badgeClass, text: items.map((s) => s.text).join(' · ') };
+      });
+  }
+  const flat = Array.isArray(neglect?.symptoms) ? neglect.symptoms : [];
+  return flat.length ? [{ key: 'all', label: '전조 증상', badgeClass: 'bg-red-100 text-red-700', text: flat.join(' · ') }] : [];
+}
+
+// 집중: symptoms_resolved_by_disease(객체) → 질환 배지(emerald) + 문장
+function buildIntensiveRows(intensive) {
+  const resolved = intensive?.symptoms_resolved_by_disease;
+  if (resolved && typeof resolved === 'object' && Object.keys(resolved).length > 0) {
+    return SYMPTOM_ORDER.filter((k) => resolved[k]).map((k) => ({
+      key: k, label: diseaseLabel(k), badgeClass: 'bg-emerald-100 text-emerald-700', text: resolved[k],
+    }));
+  }
+  const imp = Array.isArray(intensive?.improvements) ? intensive.improvements : [];
+  return imp.length ? [{ key: 'all', label: '개선', badgeClass: 'bg-emerald-100 text-emerald-700', text: imp.join(' · ') }] : [];
+}
+
+// 졸업: 백엔드 graduation 시나리오의 실제 위험도 기준으로 문구/배지 분기.
+//   (고위험인데 "표준 범위 내 안정적으로 유지" 고정 출력하던 문제 수정)
+function buildGraduationRows(graduationComps = {}) {
+  return SYMPTOM_ORDER.map((k) => {
+    const { level, pending } = normalizeComplication(graduationComps[k]);
+    if (!pending && level === RISK_LEVELS.HIGH) {
+      return {
+        key: k, label: diseaseLabel(k), badgeClass: 'bg-red-100 text-red-700',
+        text: '졸업 기준 도달 후에도 고위험으로 평가됩니다. 지속적인 관찰이 필요합니다.',
+      };
+    }
+    if (!pending && level === RISK_LEVELS.MID) {
+      return {
+        key: k, label: diseaseLabel(k), badgeClass: 'bg-amber-100 text-amber-700',
+        text: '중위험 수준으로 유지됩니다. 정기 관찰을 권장합니다.',
+      };
+    }
+    return {
+      key: k, label: diseaseLabel(k), badgeClass: 'bg-purple-100 text-purple-700',
+      text: '표준 범위 내 안정적으로 유지됩니다.',
+    };
+  });
+}
 
 function SymptomGroup({ disease, items }) {
   const label = SYMPTOM_DISEASE_LABEL[disease] || disease;
@@ -109,7 +192,8 @@ function NeglectSymptoms({ neglect }) {
 }
 
 function SliderWithBaseline({ id, label, tagline, unit, min, max, step, value, baseline, onChange, disabled }) {
-  const baselinePct = ((baseline - min) / (max - min)) * 100;
+  // 환자 실측값이 슬라이더 범위 밖이면 마커가 트랙 밖으로 넘치지 않게 0~100 클램프
+  const baselinePct = Math.max(0, Math.min(100, ((baseline - min) / (max - min)) * 100));
   const delta = value - baseline;
   const deltaSign = delta > 0 ? '+' : '';
   const deltaColor = Math.abs(delta) < 0.05 ? 'text-gray-400' : delta > 0 ? 'text-orange-500' : 'text-emerald-600';
@@ -220,6 +304,7 @@ function RiskRow({ label, level, score, pending }) {
 export default function RiskAnalysis() {
   const { patientId } = useParams();
   const { count, loading: countLoading } = usePatientCount();
+  const { settings } = useTheme();
   const [patient, setPatient] = useState(null);
   const [patientError, setPatientError] = useState(null);
   // 슬라이더 baseline: 환자 실제 값 로드 후 세팅. 로드 전 null 유지.
@@ -230,18 +315,47 @@ export default function RiskAnalysis() {
   const [scenarioError, setScenarioError] = useState(null);
   const [loading, setLoading] = useState(false);
 
-  const debouncedCpep  = useDebounce(cpeptide, 300);
-  const debouncedHba1c = useDebounce(hba1c, 300);
+  // 설정의 autoScenarioDebounce(기본 300ms) 를 실제 debounce 에 연결
+  const debounceMs = Number(settings?.autoScenarioDebounce) > 0
+    ? Number(settings.autoScenarioDebounce)
+    : 300;
+  // patientId 를 슬라이더 값과 '한 덩어리'로 debounce —
+  //   따로 debounce 하면 환자 전환 첫 렌더에서 (새 patientId + 이전 환자 슬라이더 값) 조합으로
+  //   잘못된 시뮬레이션이 발사된다. 하나의 객체로 묶으면 항상 같은 환자 기준 값끼리만 결합된다.
+  const simInput = useMemo(
+    () => ({ patientId, cpeptide, hba1c }),
+    [patientId, cpeptide, hba1c],
+  );
+  const debouncedSim = useDebounce(simInput, debounceMs);
 
   // 진행 중인 scenario 요청 abort (슬라이더 빠르게 움직일 때 stale 응답 방지)
   const abortRef = useRef(null);
 
-  // Initial patient load
+  // patientId 변경 시 이전 환자 잔존 상태 초기화 (스테일 데이터 표시 방지 — Dashboard 와 동일 패턴)
+  useEffect(() => {
+    // 이전 환자의 진행 중 시뮬레이션 응답이 새 환자 화면에 씌워지지 않게 abort
+    if (abortRef.current) {
+      abortRef.current.abort();
+      abortRef.current = null;
+    }
+    setPatient(null);
+    setPatientError(null);
+    setCpeptide(null);
+    setHba1c(null);
+    setOriginal(null);
+    setScenario(null);
+    setScenarioError(null);
+    setLoading(false);
+  }, [patientId]);
+
+  // Initial patient load — cancelled 플래그로 환자 전환 시 늦은 응답이 새 화면을 덮지 않게 (CaseComparison 패턴)
   useEffect(() => {
     if (countLoading || count === 0) return;
+    let cancelled = false;
     (async () => {
       try {
         const res = await api.get(`/patients/${patientId}`);
+        if (cancelled) return;
         const d = res.data.data;
         const p = d.patient || d;
         setPatient(p);
@@ -253,15 +367,20 @@ export default function RiskAnalysis() {
         setHba1c(hb);
         setOriginal(cp != null && hb != null ? { cpeptide: cp, hba1c: hb } : null);
       } catch (e) {
+        if (cancelled) return;
         prodSafeError('RiskAnalysis.loadPatient')(e);
-        setPatientError(e.response?.data?.detail || e.message);
+        setPatientError(errorMessage(e));
       }
     })();
+    return () => { cancelled = true; };
   }, [patientId, count, countLoading]);
 
   // Simulate on slider change (debounced)
   const fetchScenario = useCallback(async () => {
-    if (debouncedCpep == null || debouncedHba1c == null) return;
+    const { patientId: simPatientId, cpeptide: simCpep, hba1c: simHba1c } = debouncedSim;
+    // 아직 debounce 값이 이전 환자 기준이면 발사하지 않는다 (환자 전환 첫 렌더 보호)
+    if (String(simPatientId) !== String(patientId)) return;
+    if (simCpep == null || simHba1c == null) return;
     // 이전 요청 abort
     if (abortRef.current) abortRef.current.abort();
     const controller = new AbortController();
@@ -272,18 +391,21 @@ export default function RiskAnalysis() {
     try {
       const res = await api.post('/scenario/simulate', {
         patient_id: parseInt(patientId, 10),
-        c_peptide: debouncedCpep,
-        hba1c: debouncedHba1c,
+        c_peptide: simCpep,
+        hba1c: simHba1c,
       }, { signal: controller.signal });
       setScenario(res.data.data);
+      setScenarioError(null);
     } catch (e) {
       if (e.name === 'CanceledError' || e.name === 'AbortError') return;
       prodSafeError('RiskAnalysis.scenario')(e);
-      setScenarioError(e.response?.data?.detail || e.message);
+      setScenarioError(errorMessage(e));
     } finally {
-      setLoading(false);
+      // 요청 A 를 B 가 abort 한 경우 A 의 finally 가 B 진행 중에 로딩을 꺼버리지 않도록,
+      // 이 컨트롤러가 여전히 최신일 때만 로딩 해제.
+      if (abortRef.current === controller) setLoading(false);
     }
-  }, [patientId, debouncedCpep, debouncedHba1c]);
+  }, [patientId, debouncedSim]);
 
   useEffect(() => {
     if (patient && original) fetchScenario();
@@ -341,6 +463,30 @@ export default function RiskAnalysis() {
           </p>
           <Link to={`/patients/${patientId}`} className="text-xs text-accent font-semibold hover:underline">
             {'\ud658\uc790 \uc0c1\uc138\ub85c \uc774\ub3d9 \ubc0f \uc218\uc815'}
+          </Link>
+        </div>
+      </div>
+    );
+  }
+
+  // v2.2.8 (병원 정책): 필수 검사 누락 → 시나리오를 추정으로 지어내지 않고 '데이터 부족' 표시.
+  if (scenario?.insufficient) {
+    const miss = Array.isArray(scenario.missing_required) ? scenario.missing_required : [];
+    return (
+      <div className="flex-1 flex items-center justify-center">
+        <div className="bg-gray-50 border border-gray-300 rounded-xl p-6 text-center max-w-md">
+          <AlertCircle size={28} className="text-gray-400 mx-auto mb-3" />
+          <p className="text-sm font-bold text-gray-800 mb-1">
+            {'필수 검사 수치가 없어 시나리오 분석을 할 수 없습니다'}
+          </p>
+          <p className="text-xs text-gray-500 mb-3">
+            {'추정으로 채우지 않습니다. 아래 검사값을 입력하면 분석이 가능합니다.'}
+          </p>
+          {miss.length > 0 && (
+            <p className="text-[11px] text-gray-400 mb-4">{'누락: '}{miss.join(', ')}</p>
+          )}
+          <Link to={`/patients/${patientId}`} className="text-xs text-accent font-semibold hover:underline">
+            {'환자 상세로 이동 및 입력'}
           </Link>
         </div>
       </div>
@@ -405,7 +551,6 @@ export default function RiskAnalysis() {
             value={cpeptide}
             baseline={original.cpeptide}
             onChange={setCpeptide}
-            disabled={loading}
           />
 
           {/* HbA1c slider */}
@@ -419,7 +564,6 @@ export default function RiskAnalysis() {
             value={hba1c}
             baseline={original.hba1c}
             onChange={setHba1c}
-            disabled={loading}
           />
 
           {/* Tip */}
@@ -458,6 +602,11 @@ export default function RiskAnalysis() {
           <AlertCircle size={24} className="text-red-500 mx-auto mb-2" aria-hidden="true" />
           <p className="text-sm font-semibold text-red-700">{'\uC2DC\uB098\uB9AC\uC624 \uC2DC\uBBAC\uB808\uC774\uC158 \uC2E4\uD328'}</p>
           <p className="text-xs text-red-600 mt-1">{scenarioError}</p>
+          {scenario && (
+            <p className="text-[11px] text-red-500 mt-2">
+              {'\uC544\uB798 \uACB0\uACFC\uB294 \uB9C8\uC9C0\uB9C9\uC73C\uB85C \uC131\uACF5\uD55C \uC2DC\uBBAC\uB808\uC774\uC158(\uC774\uC804 \uAC12) \uAE30\uC900\uC774\uBA70, \uD604\uC7AC \uC2AC\uB77C\uC774\uB354 \uAC12\uC774 \uBC18\uC601\uB418\uC9C0 \uC54A\uC558\uC2B5\uB2C8\uB2E4.'}
+            </p>
+          )}
           <button
             onClick={fetchScenario}
             className="mt-3 inline-flex items-center gap-1 text-xs text-red-700 font-semibold hover:underline"
@@ -467,9 +616,9 @@ export default function RiskAnalysis() {
         </div>
       )}
 
-      {/* Scenario comparison */}
+      {/* Scenario comparison — 시뮬레이션 실패 시 이전 결과임을 시각적으로 구분 (dimming) */}
       {scenario && (
-        <div className="grid grid-cols-3 gap-5">
+        <div className={`grid grid-cols-3 gap-5 ${scenarioError ? 'opacity-60' : ''}`}>
           {/* NEGLECT */}
           <div className="bg-white rounded-xl p-6 border border-gray-100 shadow-sm">
             <div className="flex items-center gap-2 mb-4">
@@ -492,7 +641,7 @@ export default function RiskAnalysis() {
               </div>
             </div>
 
-            <div className="bg-gray-50 rounded-lg p-3 mb-4">
+            <div className="bg-gray-50 rounded-lg p-3 mb-4 min-h-[108px]">
               <p className="text-xs font-semibold text-gray-700 mb-2">{'\uC9C0\uD45C \uC545\uD654 \uC608\uCE21'}</p>
               <div className="flex justify-between text-xs mb-1">
                 <span className="text-gray-500">{'\uB2F9\uB1E8\uC57D \uAC1C\uC218'}</span>
@@ -510,7 +659,7 @@ export default function RiskAnalysis() {
                 const foldData = scenario?.fold_change_by_disease?.[k];
                 return (
                   // v2.2.2: 부가텍스트 유무와 무관하게 행 높이 통일 (3개 카드 열 정렬)
-                  <div key={k} className="min-h-[40px]">
+                  <div key={k} className="h-[46px] overflow-hidden">
                     <RiskRow label={riskLabels[k] || k} level={level} score={score} pending={pending} />
                     {foldData?.fold != null && (
                       <p className="text-[10px] text-gray-500 ml-4 -mt-0.5 leading-tight">
@@ -522,10 +671,11 @@ export default function RiskAnalysis() {
               })}
             </div>
 
-            <div>
-              <p className="text-xs font-semibold text-gray-700 mb-2">체감되는 전조 증상</p>
-              <NeglectSymptoms neglect={scenario.neglect} />
-            </div>
+            <ProdromeSection
+              title={'체감되는 전조 증상'}
+              rows={buildNeglectRows(scenario.neglect)}
+              emptyText={'지금 단계에선 특별한 전조증상이 예상되지 않습니다.'}
+            />
           </div>
 
           {/* INTENSIVE */}
@@ -550,7 +700,7 @@ export default function RiskAnalysis() {
               </div>
             </div>
 
-            <div className="bg-gray-50 rounded-lg p-3 mb-4">
+            <div className="bg-gray-50 rounded-lg p-3 mb-4 min-h-[108px]">
               <p className="text-xs font-semibold text-gray-700 mb-2">{'\uC9C0\uD45C \uAC1C\uC120 \uC608\uCE21'}</p>
               <div className="flex justify-between text-xs mb-1">
                 <span className="text-gray-500">{'\uB2F9\uD654\uD608\uC0C9\uC18C'}</span>
@@ -560,7 +710,19 @@ export default function RiskAnalysis() {
                 <span className="text-gray-500">C-peptide</span>
                 <span className="font-semibold text-green-600">
                   {scenario.intensive.cpeptide_before} {'\u2192'} {scenario.intensive.cpeptide_after} {UNITS.cpeptide}
-                  <span className="text-[10px] text-gray-500 font-normal ml-1">{'(\uc815\uc0c1\ubc94\uc704 1.0\u20133.5 \uc218\ub834)'}</span>
+                  {(() => {
+                    // \ubc31\uc5d4\ub4dc\uac00 \ubc18\ud658\ud55c \uc2e4\uc81c \ubaa9\ud45c\uac12 \uae30\uc900: \uc815\uc0c1\ubc94\uc704(1.0\u20133.5) \uc548\uc77c \ub54c\ub9cc '\uc218\ub834' \ud45c\ud604
+                    const target = Number(scenario.intensive.cpeptide_after);
+                    if (!Number.isFinite(target)) return null;
+                    const inRange = target >= 1.0 && target <= 3.5;
+                    return (
+                      <span className="text-[10px] text-gray-500 font-normal ml-1">
+                        {inRange
+                          ? `(\uc815\uc0c1\ubc94\uc704 1.0\u20133.5 \uc218\ub834, \ubaa9\ud45c ${target})`
+                          : `(\ubaa9\ud45c ${target} \u2014 \uc815\uc0c1\ubc94\uc704 1.0\u20133.5 \ubc16)`}
+                      </span>
+                    );
+                  })()}
                 </span>
               </div>
             </div>
@@ -570,44 +732,18 @@ export default function RiskAnalysis() {
                 const { level, score, pending } = normalizeComplication(raw);
                 return (
                   // v2.2.2: 방치/졸업 카드와 행 높이 통일 (열 정렬)
-                  <div key={k} className="min-h-[40px]">
+                  <div key={k} className="h-[46px] overflow-hidden">
                     <RiskRow label={riskLabels[k] || k} level={level} score={score} pending={pending} />
                   </div>
                 );
               })}
             </div>
 
-            <div>
-              <p className="text-xs font-semibold text-gray-700 mb-2">{'\uD68C\uBCF5\uB418\uB294 \uC804\uC870\uC99D\uC0C1'}</p>
-              {(() => {
-                const resolved = scenario.intensive.symptoms_resolved_by_disease;
-                const orderArr = ['retina', 'kidney', 'cardio'];
-                const keys = resolved ? orderArr.filter((k) => resolved[k]) : [];
-                if (keys.length === 0) {
-                  return (
-                    <ul className="space-y-1">
-                      {scenario.intensive.improvements.map((s, i) => (
-                        <li key={i} className="text-xs text-gray-600 flex gap-1.5">
-                          <span className="text-green-500" aria-hidden="true">{'\u2022'}</span>{s}
-                        </li>
-                      ))}
-                    </ul>
-                  );
-                }
-                return (
-                  <ul className="space-y-1.5">
-                    {keys.map((k) => (
-                      <li key={k} className="text-xs text-gray-700 flex items-start gap-1.5">
-                        <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[9px] font-bold tracking-wider bg-emerald-100 text-emerald-700 shrink-0 mt-0.5">
-                          {SYMPTOM_DISEASE_LABEL[k] || k}
-                        </span>
-                        <span>{resolved[k]}</span>
-                      </li>
-                    ))}
-                  </ul>
-                );
-              })()}
-            </div>
+            <ProdromeSection
+              title={'\uD68C\uBCF5\uB418\uB294 \uC804\uC870 \uC99D\uC0C1'}
+              rows={buildIntensiveRows(scenario.intensive)}
+              emptyText={'\uD604\uC7AC \uC785\uB825\uAC12 \uAE30\uC900 \uB69C\uB837\uD55C \uD68C\uBCF5 \uC804\uC870\uC99D\uC0C1\uC774 \uC608\uCE21\uB418\uC9C0 \uC54A\uC2B5\uB2C8\uB2E4.'}
+            />
           </div>
 
           {/* GRADUATION (v2.1.5 - fixed standard values) */}
@@ -644,7 +780,7 @@ export default function RiskAnalysis() {
               </div>
             </div>
 
-            <div className="bg-gray-50 rounded-lg p-3 mb-4">
+            <div className="bg-gray-50 rounded-lg p-3 mb-4 min-h-[108px]">
               <p className="text-xs font-semibold text-gray-700 mb-2">{'\uC878\uC5C5 \uAE30\uC900\uAC12'}</p>
               <div className="flex justify-between text-xs mb-1">
                 <span className="text-gray-500">HbA1c / C-peptide</span>
@@ -672,7 +808,7 @@ export default function RiskAnalysis() {
                 const delta = scenario.graduation.delta_vs_neglect?.complications?.[k];
                 return (
                   // v2.2.2: 방치/집중 카드와 행 높이 통일 (열 정렬)
-                  <div key={k} className="min-h-[40px]">
+                  <div key={k} className="h-[46px] overflow-hidden">
                     <RiskRow label={riskLabels[k] || k} level={level} score={score} pending={pending} />
                     {delta != null && delta > 0 && (
                       <p className="text-[10px] text-purple-600 ml-4 -mt-0.5 font-semibold leading-tight">
@@ -684,9 +820,11 @@ export default function RiskAnalysis() {
               })}
             </div>
 
-            <p className="text-[11px] text-gray-400 italic">
-              {'\uC2AC\uB77C\uC774\uB354 \uC601\uD5A5 \uC5C6\uB294 \uD45C\uC900\uAC12 \uAE30\uC900'}
-            </p>
+            <ProdromeSection
+              title={'\uC878\uC5C5 \uD6C4 \uC720\uC9C0 \uC0C1\uD0DC'}
+              rows={buildGraduationRows(graduationComps)}
+              footnote={'\uC2AC\uB77C\uC774\uB354 \uC601\uD5A5 \uC5C6\uB294 \uD45C\uC900\uAC12 \uAE30\uC900'}
+            />
           </div>
         </div>
       )}

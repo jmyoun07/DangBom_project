@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Save, AlertCircle, User, Calculator, Activity, FlaskConical, Beaker, Heart, Pill, Cigarette, Search, UserCheck } from 'lucide-react';
-import api from '../api/client';
+import api, { errorMessage } from '../api/client';
 import { useToast } from '../contexts/ToastContext';
 import { prodSafeError } from '../theme';
 
@@ -221,7 +221,7 @@ export default function ManualPatientForm() {
       setPreloadedFrom({ chart_no: patient.chart_no, name: patient.name });
       toast.success(`${patient.name} (${patient.chart_no}) — 기본 정보를 불러왔습니다. 새 검사 수치만 입력하세요.`);
     } catch (e) {
-      const detail = e.response?.data?.detail || e.message;
+      const detail = errorMessage(e);
       toast.error('불러오기 실패: ' + detail);
       prodSafeError('ManualPatientForm.loadExisting')(e);
     } finally {
@@ -307,7 +307,7 @@ export default function ManualPatientForm() {
         navigate('/patients');
       }
     } catch (err) {
-      const detail = err.response?.data?.detail || err.message;
+      const detail = errorMessage(err);
       setError(String(detail));
       toast.error(String(detail), { title: '등록 실패' });
       prodSafeError('ManualPatientForm.submit')(err);

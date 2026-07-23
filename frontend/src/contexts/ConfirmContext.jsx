@@ -18,6 +18,9 @@ export function ConfirmProvider({ children }) {
 
   const confirm = useCallback((opts = {}) => {
     return new Promise((resolve) => {
+      // 이미 열려 있는 confirm 이 있으면 이전 resolver 를 false 로 종료
+      //   (덮어쓰면 이전 await confirm(...) 이 영원히 pending 상태로 남음)
+      resolverRef.current?.(false);
       resolverRef.current = resolve;
       setState({
         open: true,
@@ -55,6 +58,7 @@ export function ConfirmProvider({ children }) {
   );
 }
 
+// eslint-disable-next-line react-refresh/only-export-components
 export function useConfirm() {
   const ctx = useContext(ConfirmContext);
   if (!ctx) throw new Error('useConfirm must be used within ConfirmProvider');

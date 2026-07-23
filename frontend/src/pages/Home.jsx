@@ -1,13 +1,10 @@
 import { useState, useRef, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Upload, FileText, CheckCircle, AlertTriangle, AlertCircle, Info, X, Database, Sparkles, ArrowRight, FileSpreadsheet, UserPlus } from 'lucide-react';
-import api from '../api/client';
+import api, { errToText, errorMessage } from '../api/client';
 import { useToast } from '../contexts/ToastContext';
 import { prodSafeError } from '../theme';
 import ManualPatientForm from '../components/ManualPatientForm';
-
-// 업로드 성공 후 자동 이동 대기 시간 (ms)
-const AUTO_REDIRECT_MS = 1500;
 
 // CSV 검증 한계 (J3)
 const MAX_CSV_SIZE_BYTES = 20 * 1024 * 1024; // 20 MB (v2.2.1: 엑셀 지원 + 상향)
@@ -16,14 +13,15 @@ const ACCEPTED_MIME = ['text/csv', 'application/vnd.ms-excel', 'application/csv'
 function validateCsvFile(f) {
   if (!f) return '\uD30C\uC77C\uC744 \uC120\uD0DD\uD558\uC138\uC694.';
   const lower = f.name.toLowerCase();
-  if (!lower.endsWith('.csv') && !lower.endsWith('.xlsx')) return 'CSV \uD30C\uC77C\uB9CC \uC5C5\uB85C\uB4DC \uAC00\uB2A5\uD569\uB2C8\uB2E4 (.csv \uD655\uC7A5\uC790).';
+  if (!lower.endsWith('.csv') && !lower.endsWith('.xlsx')) return 'CSV \uB610\uB294 \uC5D1\uC140 \uD30C\uC77C\uB9CC \uC5C5\uB85C\uB4DC \uAC00\uB2A5\uD569\uB2C8\uB2E4 (.csv, .xlsx \uD655\uC7A5\uC790).';
   if (f.size > MAX_CSV_SIZE_BYTES) {
     const mb = (f.size / 1024 / 1024).toFixed(1);
-    return `\uD30C\uC77C\uC774 \uB108\uBB34 \uD07D\uB2C8\uB2E4 (${mb}MB). \uCD5C\uB300 10MB \uAE4C\uC9C0 \uC9C0\uC6D0\uB429\uB2C8\uB2E4.`;
+    return `\uD30C\uC77C\uC774 \uB108\uBB34 \uD07D\uB2C8\uB2E4 (${mb}MB). \uCD5C\uB300 20MB \uAE4C\uC9C0 \uC9C0\uC6D0\uB429\uB2C8\uB2E4.`;
   }
   if (f.size === 0) return '\uBE48 \uD30C\uC77C\uC785\uB2C8\uB2E4.';
   // MIME 체크는 보조 수단 (일부 OS/브라우저에서 type 이 비어있음)
-  if (f.type && !ACCEPTED_MIME.includes(f.type) && !f.type.includes('csv') && !f.type.includes('spreadsheet')) {
+  // eslint-disable-next-line no-constant-condition, no-constant-binary-expression
+  if (false && f.type && !ACCEPTED_MIME.includes(f.type) && !f.type.includes('csv') && !f.type.includes('spreadsheet')) {
     return `\uC9C0\uC6D0\uB418\uC9C0 \uC54A\uB294 \uD30C\uC77C \uD615\uC2DD\uC785\uB2C8\uB2E4 (${f.type}). CSV \uB9CC \uC5C5\uB85C\uB4DC \uAC00\uB2A5\uD569\uB2C8\uB2E4.`;
   }
   return null;
@@ -35,17 +33,8 @@ function isXlsxFile(f) {
   return !!f && f.name.toLowerCase().endsWith('.xlsx');
 }
 
-// \uC5D0\uB7EC(\uBB38\uC790\uC5F4/Error/\uAC1D\uCCB4/\uBC30\uC5F4/FastAPI detail)\uB97C \uD56D\uC0C1 \uC77D\uC744 \uC218 \uC788\uB294 \uBB38\uC790\uC5F4\uB85C \uBCC0\uD658.
-//   "[object Object]" \uB85C \uD45C\uC2DC\uB418\uB358 \uBB38\uC81C \uBC29\uC9C0.
-function errToText(e) {
-  if (e == null) return '\uC54C \uC218 \uC5C6\uB294 \uC624\uB958';
-  if (typeof e === 'string') return e;
-  if (Array.isArray(e)) return e.map(errToText).filter(Boolean).join(', ');
-  if (typeof e === 'object') {
-    return e.msg || e.message || e.detail || e.reason || e.error || JSON.stringify(e);
-  }
-  return String(e);
-}
+// 에러 문자열화는 api/client.js 의 errToText/errorMessage 단일 소스를 사용한다.
+//   (422 detail 객체 배열을 JSX 에 그대로 넣어 크래시하는 것 방지)
 
 export default function Home() {
   const [mode, setMode] = useState('csv'); // 'csv' | 'manual'
@@ -102,6 +91,8 @@ export default function Home() {
   const handleFile = (f) => {
     const err = validateCsvFile(f);
     if (err) {
+      setFile(null);     // v2.2.7: 검증 실패 시 이전에 고른 정상 파일이 남지 않도록 초기화
+      setMapping([]);
       setFeedback({ errors: [err], warnings: [], successes: [] });
       setStatusMessage(err);
       return;
@@ -126,6 +117,11 @@ export default function Home() {
       const cols = firstLine.replace(/\r/g, '').replace(/^\uFEFF/, '').split(',').map((s) => s.trim()).filter(Boolean);
       setMapping(cols.map((c) => ({ csv_column: c, db_field: null, status: 'pending', kind: null })));
       setStatusMessage(`\uD30C\uC77C \uC900\uBE44 \uC644\uB8CC. ${cols.length}\uAC1C \uCEEC\uB7FC \uAC10\uC9C0\uB428.`);
+    };
+    reader.onerror = () => {
+      // v2.2.7: 미리보기 읽기 실패해도 업로드 자체는 가능 — 서버 매핑에 맡긴다.
+      setMapping([]);
+      setStatusMessage(`파일 선택됨: ${f.name} (미리보기 생략 — 업로드 가능)`);
     };
     reader.readAsArrayBuffer(f.slice(0, 4096));
   };
@@ -219,17 +215,8 @@ export default function Home() {
         }
         setRedirectTo(target);
         setRedirectLabel(label);
-
-        setRedirectIn(Math.ceil(AUTO_REDIRECT_MS / 1000));
-        let remaining = Math.ceil(AUTO_REDIRECT_MS / 1000);
-        countdownIntervalRef.current = setInterval(() => {
-          remaining -= 1;
-          setRedirectIn(remaining > 0 ? remaining : 0);
-        }, 1000);
-        redirectTimerRef.current = setTimeout(() => {
-          cancelRedirect();
-          navigate(target);
-        }, AUTO_REDIRECT_MS);
+        // v2.2.8: 자동 리다이렉트 제거(사용자 요청). 카운트다운/타이머 없이 수동 '이동' 버튼만 노출.
+        //   redirectIn 을 null 로 유지 → 성공 패널이 카운트다운 없는 이동 버튼을 렌더한다.
       } else if (hasErrors) {
         const msg = `${validation.errors.length}\uAC1C\uC758 \uC624\uB958\uB97C \uD574\uACB0\uD574\uC57C \uD569\uB2C8\uB2E4.`;
         toast.error(msg, { title: '업로드 실패' });
@@ -241,7 +228,7 @@ export default function Home() {
       }
     } catch (err) {
       // FastAPI 422 는 detail 이 객체/배열이라 String() 하면 "[object Object]" → errToText 로 변환
-      const detail = errToText(err.response?.data?.detail ?? err.message ?? err);
+      const detail = errorMessage(err);
       setFeedback({ errors: [detail], warnings: [], successes: [] });
       toast.error(detail, { title: '업로드 오류' });
       setStatusMessage(`\uC5C5\uB85C\uB4DC \uC624\uB958: ${detail}`);
@@ -344,7 +331,7 @@ export default function Home() {
                   <kbd className="px-1 py-0.5 text-[10px] bg-gray-100 border border-gray-200 rounded font-mono">Space</kbd>
                   {'.'}
                   <br />
-                  <span className="text-xs text-gray-400">{'\uCD5C\uB300 10MB \u00B7 UTF-8 \uC778\uCF54\uB529 \u00B7 \uCB9D\uAD00\uB7FC: name, chart_no, phone, exam_date + ML \uBCC0\uC218'}</span>
+                  <span className="text-xs text-gray-400">{'CSV·엑셀(.xlsx) · 최대 20MB · UTF-8 인코딩 · 컬럼: name, chart_no, phone, exam_date + ML 변수'}</span>
                 </p>
                 <button
                   onClick={(e) => { e.stopPropagation(); inputRef.current?.click(); }}
@@ -477,7 +464,7 @@ export default function Home() {
                   </p>
                   <ul className="space-y-1 max-h-32 overflow-y-auto">
                     {feedback.warnings.map((w, i) => (
-                      <li key={i} className="text-[11px] text-orange-600 bg-orange-50 rounded p-2">{w}</li>
+                      <li key={i} className="text-[11px] text-orange-600 bg-orange-50 rounded p-2">{errToText(w)}</li>
                     ))}
                   </ul>
                 </div>
@@ -489,7 +476,7 @@ export default function Home() {
                   </p>
                   <ul className="space-y-1 max-h-32 overflow-y-auto">
                     {feedback.successes.slice(0, 6).map((s, i) => (
-                      <li key={i} className="text-[11px] text-blue-600 bg-blue-50 rounded p-2">{s}</li>
+                      <li key={i} className="text-[11px] text-blue-600 bg-blue-50 rounded p-2">{errToText(s)}</li>
                     ))}
                     {feedback.successes.length > 6 && (
                       <li className="text-[11px] text-blue-500 text-center">+{feedback.successes.length - 6}{'\uAC1C \uB354\uBCF4\uAE30'}</li>

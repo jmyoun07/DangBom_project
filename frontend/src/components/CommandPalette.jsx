@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { Search, User, LayoutDashboard, Activity, GitCompare, Upload, Users, Settings as SettingsIcon, Cog, Clock, CornerDownLeft } from 'lucide-react';
 import api from '../api/client';
 import useRecentPatients from '../hooks/useRecentPatients';
+import { sexKo } from '../theme';
 
 // Quick nav actions (always visible)
 const NAV_ACTIONS = [
@@ -93,7 +94,7 @@ export default function CommandPalette() {
           type: 'patient',
           id: `p:${p.id}`,
           label: p.name,
-          sub: `${p.chart_no} · ${p.sex === 'M' ? '\uB0A8' : '\uC5EC'} ${p.age}\uC138${p.phone ? ' · ' + p.phone : ''}`,
+          sub: `${p.chart_no} · ${sexKo(p.sex)} ${p.age}\uC138${p.phone ? ' · ' + p.phone : ''}`,
           avatar: p.name?.[0] || '?',
           onPick: () => navigate(`/dashboard/${p.id}`),
         });
@@ -119,7 +120,7 @@ export default function CommandPalette() {
           type: 'recent',
           id: `r:${p.id}`,
           label: p.name,
-          sub: `${p.chart_no} · ${p.sex === 'M' ? '\uB0A8' : '\uC5EC'} ${p.age}\uC138`,
+          sub: `${p.chart_no} · ${sexKo(p.sex)} ${p.age}\uC138`,
           avatar: p.name?.[0] || '?',
           onPick: () => navigate(`/dashboard/${p.id}`),
         });
