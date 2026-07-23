@@ -24,29 +24,35 @@ import re
 from datetime import date, datetime
 from typing import Any
 
-# 저장 가능한 원본 임상 수치의 생리적/장비 측정 가능 범위.
-# 진단 기준이 아니라 명백한 OCR·단위·전사 오류를 막기 위한 넓은 화이트리스트다.
+# 저장 가능한 원본 임상 수치의 허용 범위.
+# v2.3.2 (병원 피드백 — "데이터는 다 받아야"): 범위를 '명백한 입력오류(자릿수 실수·전사 오류)만
+#   거른다' 수준으로 넓혔다. 경계값(HbA1c 2.9, LDL 5~8[병원 데이터가 mmol/L일 가능성] 등)은
+#   버리지 않고 그대로 저장한다. 진짜 이상치(c_peptide 144·284 ng/mL 등 자릿수 오류)만 걸러 경고.
+#   → 상한/하한은 '단위가 달라도(mg/dL↔mmol/L) 담기되, 오타/자릿수 실수는 잡히는' 넓은 폭.
+# ⚠️ 이 범위는 models/schemas.py 의 PatientBase Field(ge/le) 제약과 **반드시 동일**해야 한다.
+#   업로드(CSV)는 이 dict 로, 수기 POST/PATCH 는 Pydantic 으로 검증하므로 값이 어긋나면
+#   같은 값이 한 경로에서만 거부되는 불일치가 생긴다. (codex 검토 M5 — 2026-07 동기화)
 CLINICAL_RANGES: dict[str, tuple[float, float]] = {
-    "hba1c": (3.0, 20.0),
-    "c_peptide": (0.01, 15.0),
-    "cr": (0.1, 15.0),
-    "bmi": (10.0, 60.0),
-    "fbg": (20.0, 600.0),
-    "sbp": (50.0, 260.0),
-    "dbp": (30.0, 160.0),
-    "total_cholesterol": (50.0, 600.0),
-    "triglycerides": (20.0, 2000.0),
-    "hdl": (10.0, 150.0),
-    "ldl": (10.0, 400.0),
-    "ldl_calc": (10.0, 400.0),  # Friedewald/실측 fallback도 LDL과 같은 저장 범위
-    "alt": (1.0, 2000.0),
-    "ast": (1.0, 2000.0),
-    "ggt": (1.0, 2000.0),
-    # v2.3.0 (감사): 음수 나이·키·몸무게 등 명백한 오입력이 그대로 저장되어
-    #   파생값(BMI·eGFR·나이계열)과 모델 입력을 오염시키던 문제 차단.
+    "hba1c": (2.0, 25.0),          # 2.9 저장(경계 저혈색소). 144·2.9오타 등은 범위로 처리
+    "c_peptide": (0.01, 50.0),     # 144·284 = 자릿수 오류 → 거름. 0.0 = 실측 불가값 → 미측정 취급
+    "he_insulin": (0.0, 300.0),    # c_peptide×3 하위호환 저장값 (schema 동기화)
+    "cr": (0.0, 30.0),
+    "bmi": (8.0, 90.0),
+    "fbg": (10.0, 1500.0),
+    "sbp": (40.0, 320.0),
+    "dbp": (20.0, 220.0),
+    "total_cholesterol": (0.0, 1000.0),
+    "triglycerides": (0.0, 10000.0),
+    "hdl": (0.0, 300.0),
+    "ldl": (0.0, 1000.0),          # LDL 5~8(mg/dL 기준 낮음)도 저장. 자릿수오류(4자리)만 거름
+    "ldl_calc": (0.0, 1000.0),     # Friedewald/실측 fallback도 LDL과 같은 저장 범위
+    "alt": (0.0, 2000.0),
+    "ast": (0.0, 2000.0),
+    "ggt": (0.0, 2000.0),
+    # v2.3.0 (감사): 음수 나이·키·몸무게 등 명백한 오입력 차단(파생값·모델 오염 방지).
     "age": (0.0, 120.0),
-    "height": (50.0, 250.0),
-    "weight": (10.0, 400.0),
+    "height": (80.0, 230.0),       # 성인 환자군 — 하한 80(비현실 BMI 폭주 방지, schema 동기화)
+    "weight": (15.0, 350.0),
     "sleep_hours": (0.0, 24.0),
     "dm_diagnosis_age": (0.0, 120.0),
     # 이진 플래그 (0/1) — 범위 밖 값은 결측 처리 (임의 해석 금지)
@@ -72,6 +78,28 @@ BINARY_FIELDS: frozenset[str] = frozenset(
 DATE_DAY_ZERO_POLICY = "reject"
 CLINICAL_DATE_FIELDS = frozenset({"exam_date", "measured_at", "dob"})
 _DAY_ZERO_RE = re.compile(r"^\s*\d{4}(?:[-/.]\d{1,2}[-/.]00|\d{2}00)(?:\D.*)?$")
+# v2.3.2 (병원 피드백): 2자리 연도 날짜(예: '64-02-29' = 1964-02-29). 병원 실데이터가
+#   생년을 2자리로 적는 경우가 있어, 통째로 버리지 않고 세기(19xx/20xx)를 추정해 받는다.
+_TWO_DIGIT_YEAR_RE = re.compile(r"^\s*(\d{2})[-/.](\d{1,2})[-/.](\d{1,2})\s*$")
+
+
+def _resolve_two_digit_date(yy: int, mm: int, dd: int, today: date, *, past_only: bool):
+    """2자리 연도 date 해석. 실재일(윤년 포함)은 date() 가 검증한다.
+      - past_only=True(dob): 생년은 미래 불가 → 2000+yy 가 미래면 1900+yy.
+        예 '64-02-29'→1964-02-29, '26-12-01'(오늘 이전 아니면)→1926-12-01.
+      - past_only=False(검사일): 근래(20xx)로만 해석. 근미래 오타('27')는 100년 전으로
+        둔갑시키지 않고 그대로 두어 상위 '미래 날짜' 검사가 거부하게 한다.
+    실패 시 None."""
+    year_candidates = (2000 + yy, 1900 + yy) if past_only else (2000 + yy,)
+    for yr in year_candidates:
+        try:
+            d = date(yr, mm, dd)
+        except ValueError:
+            continue
+        if past_only and d > today:
+            continue
+        return d
+    return None
 
 
 def validate_clinical_value(field: str, value: Any) -> tuple[Any | None, str | None]:
@@ -134,7 +162,18 @@ def validate_clinical_date(
             try:
                 parsed = datetime.fromisoformat(s).date()
             except (TypeError, ValueError):
-                return None, f"{field}: 실재하지 않거나 지원하지 않는 날짜 {s!r}입니다."
+                parsed = None
+        if parsed is None:
+            # v2.3.2: 2자리 연도('64-02-29' 등). strptime %Y 는 4자리만 받으므로 별도 처리.
+            #   세기 추정(dob=과거, 검사일=근래)은 field 로 구분. 잘못된 날짜(예 1965-02-29)는 거부.
+            m = _TWO_DIGIT_YEAR_RE.match(s)
+            if m:
+                yy, mm, dd = int(m.group(1)), int(m.group(2)), int(m.group(3))
+                parsed = _resolve_two_digit_date(
+                    yy, mm, dd, today or date.today(), past_only=(field == "dob")
+                )
+        if parsed is None:
+            return None, f"{field}: 실재하지 않거나 지원하지 않는 날짜 {s!r}입니다."
 
     ref = today or date.today()
     if parsed > ref:

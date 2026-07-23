@@ -26,7 +26,7 @@ class PatientBase(BaseModel):
 
     # ── 혈당·인슐린 ─────────────────────────────
     hba1c: Optional[float] = Field(None, ge=2.0, le=25.0)        # HE_HbA1c (%)
-    c_peptide: Optional[float] = Field(None, ge=0.0, le=50.0)    # ng/mL
+    c_peptide: Optional[float] = Field(None, ge=0.01, le=50.0)   # ng/mL (0.0=실측불가 → 미측정 취급)
     fbg: Optional[float] = Field(None, ge=10.0, le=1500.0)       # HE_glu mg/dL (극단 고혈당 수용)
     he_insulin: Optional[float] = Field(None, ge=0.0, le=300.0)
 
