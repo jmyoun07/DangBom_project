@@ -76,7 +76,7 @@ export default function RiskCard({
   const { settings } = useTheme();
   const showEnglish = settings?.showEnglishLabels !== false;
   const displayMetricLabel = showScore ? '위험지수' : metricLabel;
-  const displayMetricValue = showScore ? (score == null ? '--' : `${score}/100`) : metricValue;
+  const displayMetricValue = showScore ? (score == null ? '--' : `${Math.round(score)}/100`) : metricValue;
   // v2.1.2 \u2014 KNHANES \uB3D9\uC77C \uC5F0\uB839\uB300 \uBC31\uBD84\uC704 \uD45C\uC2DC.
   // percentile = { percentile: 73, top_percent: 27, bucket: "60-69", n: 1299 }
   //   \u2193 "\uC0C1\uC704 X%" \uB85C \uD45C\uC2DC (X = 100 - percentile)

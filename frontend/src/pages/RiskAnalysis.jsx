@@ -663,7 +663,7 @@ export default function RiskAnalysis() {
                     <RiskRow label={riskLabels[k] || k} level={level} score={score} pending={pending} />
                     {foldData?.fold != null && (
                       <p className="text-[10px] text-gray-500 ml-4 -mt-0.5 leading-tight">
-                        같은 나이대 대비 {Number(foldData.fold).toFixed(2)}배
+                        같은 나이대 대비 {Math.round(Number(foldData.fold))}배
                       </p>
                     )}
                   </div>
@@ -812,7 +812,7 @@ export default function RiskAnalysis() {
                     <RiskRow label={riskLabels[k] || k} level={level} score={score} pending={pending} />
                     {delta != null && delta > 0 && (
                       <p className="text-[10px] text-purple-600 ml-4 -mt-0.5 font-semibold leading-tight">
-                        방치 대비 {delta.toFixed(1)}점 감소
+                        방치 대비 {Math.round(delta)}점 감소
                       </p>
                     )}
                   </div>
