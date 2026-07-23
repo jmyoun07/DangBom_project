@@ -298,6 +298,47 @@ def _improve(score: float, baseline_sev: float, drift_better: float) -> float:
     return round(_clamp(score - delta, 2, 90), 1)
 
 
+# ── 건강수명 추정 (v2.3.1) ──────────────────────────────────────────────
+# 이전(82 − 나이/10) 방식의 문제:
+#   1) 82세 초과 환자는 기준선이 현재 나이보다 낮아져 하한(age+1)만 걸리며 붕괴.
+#   2) 고정 앵커(82)라 전 연령 결과가 비슷하게 수렴.
+# 개선: 실제 나이의 '기대여명(남은 예상 수명)'을 한국 간이생명표로 구해
+#   건강 기준 총수명 = 나이 + 기대여명 을 만들고, 합병증으로 잃는 수명(YLL)을 차감한다.
+#   기대여명은 고령일수록 작아지므로 90·95세도 자연스럽게 처리되고(남은 수명만큼만 차감),
+#   연령별로 기준선이 달라져 결과가 구분된다.
+# 출처: KOSIS 간이생명표(전체) 근사값 — 절대 정밀도보다 '나이 기반·단조·붕괴 없음'이 목적.
+#   실제 코호트/생명표로 교체하면 바로 정밀도 향상 가능(값만 갱신).
+_KOREAN_RLE = {
+    30: 53.3, 35: 48.5, 40: 43.6, 45: 38.8, 50: 34.1, 55: 29.5,
+    60: 25.0, 65: 20.7, 70: 16.7, 75: 12.9, 80: 9.6, 85: 6.9,
+    90: 4.8, 95: 3.3, 100: 2.3,
+}
+
+
+def _remaining_life_expectancy(age) -> float:
+    """해당 나이의 기대여명(남은 예상 수명, 년) — 한국 간이생명표 근사 + 선형보간."""
+    a = age if isinstance(age, (int, float)) and age == age else 60  # None/NaN → 60
+    a = _clamp(float(a), 0.0, 110.0)
+    keys = sorted(_KOREAN_RLE)
+    if a <= keys[0]:
+        # 표 하한(30세)보다 어리면 대략 1살당 남은수명 +1 로 외삽
+        return _KOREAN_RLE[keys[0]] + (keys[0] - a)
+    if a >= keys[-1]:
+        return _KOREAN_RLE[keys[-1]]
+    for i in range(len(keys) - 1):
+        a0, a1 = keys[i], keys[i + 1]
+        if a0 <= a <= a1:
+            r0, r1 = _KOREAN_RLE[a0], _KOREAN_RLE[a1]
+            return r0 + (r1 - r0) * (a - a0) / (a1 - a0)
+    return _KOREAN_RLE[keys[-1]]
+
+
+def _healthy_total_lifespan(age) -> float:
+    """건강한 동일 연령의 기대 총수명 = 현재 나이 + 기대여명."""
+    return float(age if isinstance(age, (int, float)) and age == age else 60) \
+        + _remaining_life_expectancy(age)
+
+
 # ── 엔드포인트 ──
 
 def build_scenario_payload(patient, pdict, age, sim_hba1c, sim_cpep, base_hba1c, base_cpep):
@@ -437,7 +478,12 @@ def build_scenario_payload(patient, pdict, age, sim_hba1c, sim_cpep, base_hba1c,
         "hba1c": 5.6, "c_peptide": 1.3, "fbg": 90.0,
         "sbp": 120.0, "dbp": 80.0, "bmi": 22.0,
     }
-    grad_life = max(62, age + 5, int(82 - age / 10 + 10))   # 고정 최선 (age 만 의존)
+    # v2.3.1: 82 고정 앵커 → 한국 간이생명표 기대여명 기반 (고령자 붕괴·전연령 수렴 문제 해결).
+    rle = _remaining_life_expectancy(age)          # 현재 나이의 남은 기대수명(년)
+    healthy_total = age + rle                       # 건강한 동일 연령 기대 총수명
+    # 졸업(완전 회복) = 거의 건강 기준. 손실을 방치 최소치(life_hit 하한 0.5)보다 작게(≤0.4) 잡아
+    #   항상 졸업 ≥ 방치 가 성립하도록 한다(단조성 보장).
+    grad_life = int(round(max(age + 2, healthy_total - min(0.4, rle * 0.03))))
     grad_cost = int(_clamp(40 + age * 0.2, 40, 55))         # 고정 최저 (age 만 의존)
 
     # 졸업 이상치 대비 이탈도 — 혈당(슬라이더)이 주요인, 동반수치는 '비정상 구간'만 가산.
@@ -471,9 +517,10 @@ def build_scenario_payload(patient, pdict, age, sim_hba1c, sim_cpep, base_hba1c,
                 "score": _score_for_level(worsened, level, short, age),
             }
 
-    # 건강수명 감소 — baseline severity + 악화 방향 drift 가 클수록 큼.
-    # 저위험 + 슬라이더 그대로 → 1년 미만 (사실상 변화 없음).
-    life_hit = _clamp(baseline_sev * 12.0 + drift_worse * 3.0, 0.5, 18.0)
+    # 건강수명 감소(잃는 수명, YLL) — baseline severity + 악화 방향 drift 가 클수록 큼.
+    # v2.3.1: 상한을 '남은 기대수명의 60%'로 잡아 고령자(남은 수명 적음)는 자동으로 작게,
+    #   젊은 환자는 크게 차감된다. 남은 수명보다 더 잃을 수 없으니 현재 나이 밑으로 붕괴하지 않음.
+    life_hit = _clamp(baseline_sev * 12.0 + drift_worse * 3.0, 0.5, rle * 0.6)
 
     # 의료비 절대치 — 환자 baseline 위험에 비례. 슬라이더 악화도 반영.
     cost_base = int(80 + baseline_sev * 350 + drift_worse * 100)
@@ -503,10 +550,9 @@ def build_scenario_payload(patient, pdict, age, sim_hba1c, sim_cpep, base_hba1c,
         if items:
             neglect_symptoms[short_key] = items
 
-    # 건강수명 — 환자 현재 나이보다 낮아지면 모순이므로 age + 1 이상 보장.
-    # 저위험 + 변화 없음일 때는 거의 정상 기대수명 (life_hit ~0.5) 으로 합리적인 결과.
-    neglect_life_raw = int(82 - (age / 10) - life_hit)
-    neglect_life = max(50, age + 1, neglect_life_raw)
+    # 건강수명 = 건강 기준 총수명 − 잃는 수명. 현재 나이보다 낮아지면 모순이므로 age+1 이상 보장.
+    # 저위험 + 변화 없음이면 life_hit ~0.5 라 거의 건강 기준(healthy_total)에 가깝다.
+    neglect_life = int(round(max(age + 1, healthy_total - life_hit)))
 
     neglect = {
         "life_expectancy": neglect_life,
@@ -572,8 +618,6 @@ def build_scenario_payload(patient, pdict, age, sim_hba1c, sim_cpep, base_hba1c,
                 "score": _score_for_level(improved, level, short, age),
             }
 
-    # 건강수명 회복 — 저위험 환자는 작은 회복(이미 건강), 고위험 환자는 큰 회복.
-    life_gain = _clamp(baseline_sev * 5.0 + drift_better * 3.0, 1.0, 8.0)
     cost_after = int(_clamp(cost_base * 0.4, 60, 400))
     # v2.2.2 (졸업 수렴): 프로필이 졸업 이상치에 가까울수록(grad_conv→1) 졸업 의료비로 당김.
     #   grad_cost ≤ cost_after 이므로 의료비는 내려가고, 항상 grad_cost ≤ 집중 ≤ 방치 유지.
@@ -583,12 +627,14 @@ def build_scenario_payload(patient, pdict, age, sim_hba1c, sim_cpep, base_hba1c,
     cost_after = max(grad_cost, min(cost_after, int(current_cost * 0.95)))
     cost_decrease_pct = int(_clamp(round((current_cost - cost_after) * 100.0 / current_cost), 1, 99))
 
-    # 집중관리 건강수명 — age + 3 이상, 방치보다 +2 이상.
-    intensive_life_raw = int(82 - (age / 10) + life_gain)
-    intensive_life = max(60, age + 3, neglect_life + 2, intensive_life_raw)
-    # v2.2.2 (졸업 수렴): 프로필이 졸업 이상치에 가까울수록(grad_conv→1) 졸업 수명으로 당김.
-    #   grad_life ≥ intensive 이므로 수명은 올라가고, 항상 방치 ≤ 집중 ≤ grad_life 유지.
-    intensive_life = int(round(intensive_life + (grad_life - intensive_life) * grad_conv))
+    # 집중관리 건강수명 — 방치와 졸업 '사이'를 회복비율로 보간한다.
+    # v2.3.1: 고정 앵커 제거. 회복비율은 졸업 근접도(grad_conv)·개선 방향 슬라이더(drift_better)·
+    #   baseline severity 로 결정 — 관리 여지가 클수록 졸업 쪽에 가깝게 회복.
+    #   항상 방치 ≤ 집중 ≤ 졸업 유지(grad_life ≥ neglect_life 는 손실 크기상 보장됨).
+    recover = _clamp(0.35 + baseline_sev * 0.20 + drift_better * 0.10 + grad_conv * 0.40, 0.30, 0.90)
+    intensive_life = int(round(neglect_life + (grad_life - neglect_life) * recover))
+    # 방치 ≤ 집중 ≤ 졸업 (비-엄격). 매우 건강하거나 초고령이면 셋이 근접/동일할 수 있음.
+    intensive_life = min(grad_life, max(neglect_life, intensive_life))
 
     # ── 집중관리 시 회복 메시지 (방치 측 전조증상에 1:1 대응) ──
     # 방치 박스에 노출된 각 질환의 worsened 등급을 기준으로 "어떻게 해결되는지" 한 줄.
