@@ -886,7 +886,7 @@ _TIME_VARYING_LABS = frozenset({
 def _visit_measured(v) -> dict:
     """그 방문의 검증된 실측값만 반환한다.
 
-    snapshot을 먼저 읽되 4개 전용 컬럼이 non-NULL이면 그 값의 유효성 여부와 무관하게
+    snapshot을 먼저 읽되 전용 컬럼(_LATEST_VISIT_MASTER_FIELDS)이 non-NULL이면 그 값의 유효성 여부와 무관하게
     snapshot 값을 제거한 뒤 컬럼만 검증한다. 즉 컬럼과 snapshot이 모두 있으면 컬럼이
     명시적으로 우선하며, invalid 컬럼을 valid snapshot으로 몰래 대체하지 않는다.
     """
@@ -902,7 +902,10 @@ def _visit_measured(v) -> dict:
                     measured[k] = val
         except Exception:
             pass
-    for k, col in (("hba1c", v.hba1c), ("c_peptide", v.c_peptide), ("cr", v.cr), ("bmi", v.bmi)):
+    for k, col in (
+        ("hba1c", v.hba1c), ("c_peptide", v.c_peptide), ("cr", v.cr), ("bmi", v.bmi),
+        ("dm_med_count", v.dm_med_count),
+    ):
         if col is not None:
             measured.pop(k, None)  # non-NULL 컬럼은 snapshot fallback을 차단한다.
             value, _ = validate_clinical_value(k, col)

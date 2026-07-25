@@ -78,9 +78,17 @@ export function errorMessage(err, fallback = '알 수 없는 오류가 발생했
   const data = err?.response?.data;
   // 1순위: 백엔드가 보장하는 사람이 읽을 수 있는 문자열
   const errText = errToText(data?.error);
-  if (errText) return errText;
-  // 2순위: detail (배열/객체면 문자열로 변환)
   const detailText = errToText(data?.detail);
+  if (errText) {
+    // 500 의 error 는 "서버 내부 오류가 발생했습니다." 고정 문구라 원인 파악이 불가능하다.
+    // detail 에 실제 예외("TypeError: ...")가 들어 있으므로 함께 노출해 설치본에서도
+    // 사용자가 스크린샷만으로 원인을 전달할 수 있게 한다.
+    if (err?.response?.status >= 500 && detailText && detailText !== errText) {
+      return `${errText} (${detailText})`;
+    }
+    return errText;
+  }
+  // 2순위: detail (배열/객체면 문자열로 변환)
   if (detailText) return detailText;
   // 3순위: body 자체가 문자열이거나 axios 자체 메시지
   const bodyText = typeof data === 'string' ? data.trim() : '';

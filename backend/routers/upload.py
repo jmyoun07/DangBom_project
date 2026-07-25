@@ -38,13 +38,15 @@ from services.derived import (
 )
 from ml.predictor import missing_required_fields  # v2.2.8: 필수 검사 누락 행 거부
 
-_TRACKED_VISIT_FIELDS = ("hba1c", "c_peptide", "cr", "bmi")
+# routers/patients.py 의 _LATEST_VISIT_MASTER_FIELDS 와 동일해야 한다.
+# (업로드가 방문 행에 담는 값 = 마스터 동기화가 최신 방문에서 읽는 값)
+_TRACKED_VISIT_FIELDS = ("hba1c", "c_peptide", "cr", "bmi", "dm_med_count")
 
 
 def _append_measurement(db: Session, patient_id: int, pdata: dict) -> MeasurementHistory | None:
     """
     기존 환자에 시계열 측정값을 누적 저장.
-    C-peptide / HbA1c / Cr 3가지 핵심 추적 지표만 기록 (대시보드 차트와 일치).
+    _TRACKED_VISIT_FIELDS 의 핵심 추적 지표만 전용 컬럼에 기록 (대시보드 차트와 일치).
     """
     clean, _ = sanitize_clinical_data(pdata)
     measured_at, date_warning = validate_clinical_date(
@@ -53,21 +55,15 @@ def _append_measurement(db: Session, patient_id: int, pdata: dict) -> Measuremen
     if date_warning:
         raise ValueError(date_warning)
     measured_at = measured_at or date.today()
-    cp = clean.get("c_peptide")
-    a1c = clean.get("hba1c")
-    cr = clean.get("cr")
-    bmi = clean.get("bmi")
-    # 추적 지표(C-pep/HbA1c/Cr/BMI)가 모두 없으면 측정 기록을 만들지 않음
-    if cp is None and a1c is None and cr is None and bmi is None:
+    core = {field: clean.get(field) for field in _TRACKED_VISIT_FIELDS}
+    # 추적 지표(C-pep/HbA1c/Cr/BMI/당뇨약 개수)가 모두 없으면 측정 기록을 만들지 않음
+    if all(value is None for value in core.values()):
         return None
     measurement = MeasurementHistory(
         patient_id=patient_id,
         measured_at=measured_at,
-        c_peptide=cp,
-        hba1c=a1c,
-        cr=cr,
-        bmi=bmi,
         snapshot=visit_snapshot(clean),  # 검증된 방문 입력만 보존
+        **core,
     )
     db.add(measurement)
     return measurement

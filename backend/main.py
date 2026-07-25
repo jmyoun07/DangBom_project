@@ -15,17 +15,41 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from models.database import engine, Base, create_seed_data, apply_lightweight_migrations
+from models.database import engine, Base, create_seed_data, apply_lightweight_migrations, DB_FILE
 from routers import patients, prediction, scenario, case_comparison, upload, diagnostics, graduates
 
 # DB 테이블 생성 + 경량 자동 마이그레이션 (기존 DB 에 새 컬럼 추가)
 Base.metadata.create_all(bind=engine)
 apply_lightweight_migrations()
 
+
+def _attach_file_log() -> None:
+    """설치본(--windowed PyInstaller)은 stdout/stderr 이 devnull 이라 traceback 이 증발한다.
+    실제 배포 PC 에서 500 원인을 사후에 확인할 수 있도록 DB 폴더의 backend.log 에 남긴다.
+    (backend_entry.py 가 쓰는 %APPDATA%\\DB-care\\backend.log 와 같은 파일)"""
+    logger = logging.getLogger("dbcare")
+    logger.setLevel(logging.INFO)
+    log_path = Path(DB_FILE).parent / "backend.log"
+    if any(
+        isinstance(h, logging.FileHandler)
+        and getattr(h, "baseFilename", None) == str(log_path)
+        for h in logger.handlers
+    ):
+        return
+    try:
+        handler = logging.FileHandler(log_path, encoding="utf-8")
+        handler.setFormatter(logging.Formatter("[%(asctime)s] %(levelname)s %(message)s"))
+        logger.addHandler(handler)
+    except Exception:
+        pass  # 로그 파일을 못 열어도 앱은 정상 동작해야 한다
+
+
+_attach_file_log()
+
 app = FastAPI(
     title="DB-care API",
     description="당뇨 합병증 예측 프로그램 백엔드",
-    version="2.3.3",
+    version="2.3.4",
 )
 
 REQUIRED_API_TOKEN = os.environ.get("DBCARE_API_TOKEN", "").strip()
@@ -141,7 +165,7 @@ def health_check():
     return {
         "status": "ok",
         "service": "DB-care API",
-        "version": "2.3.3",
+        "version": "2.3.4",
         "instance_id": os.environ.get("DBCARE_INSTANCE_ID"),
     }
 

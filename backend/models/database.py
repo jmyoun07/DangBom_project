@@ -129,6 +129,11 @@ def apply_lightweight_migrations() -> None:
                 with engine.begin() as conn:
                     conn.execute(text("ALTER TABLE measurement_history ADD COLUMN snapshot TEXT"))
                     print("[MIGRATION] measurement_history.snapshot 추가 (과거행 NULL — 백필로 최신 방문 채움)")
+            # v2.3.4: 당뇨약 개수 방문 추적 (v2.3.3 에서 컬럼 없이 쓰여 등록 500 발생)
+            if "dm_med_count" not in mh_cols:
+                with engine.begin() as conn:
+                    conn.execute(text("ALTER TABLE measurement_history ADD COLUMN dm_med_count INTEGER"))
+                    print("[MIGRATION] measurement_history.dm_med_count 추가 (과거행 NULL 유지)")
 
         # ── 졸업자 데이터 보강 컬럼 (병원 6/13: C-peptide·eGFR·합병증 전/후) ──
         if inspector.has_table("graduates"):
@@ -328,6 +333,9 @@ class MeasurementHistory(Base):
     hba1c = Column(Float)
     cr = Column(Float)
     bmi = Column(Float)   # 항목6: BMI 추이 차트용 (업로드 시 파생 BMI 저장)
+    # v2.3.4: 당뇨약 개수도 방문마다 달라지는 값이라 routers/patients.py 의
+    #   _LATEST_VISIT_MASTER_FIELDS 에 포함됐지만 컬럼이 없어 환자 등록이 500 으로 실패했다.
+    dm_med_count = Column(Integer)
     snapshot = Column(String)   # v2.2.9: 방문 시점 전체 검사값 JSON (검사이력 페이지 — 전체 패널/방문별 위험도)
 
     patient = relationship("Patient", back_populates="measurements")
