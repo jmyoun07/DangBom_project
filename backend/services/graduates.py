@@ -88,6 +88,30 @@ _MODEL_TO_SHORT = {
 }
 
 
+def _derive_age(dob, visit_date):
+    """dob + 검사일 → 만 나이. 둘 중 하나라도 없거나 파싱 실패면 None.
+    v2.3.5: 병원이 나이를 직접 계산해 적지 않아도 되게 한다."""
+    from services.derived import _to_date, _age_from_dob
+    d = _to_date(dob)
+    if d is None:
+        return None
+    return _age_from_dob(d, _to_date(visit_date))
+
+
+def _derive_egfr(cr, age, sex):
+    """CKD-EPI eGFR — 앱 전체와 동일 공식(services.derived) 사용."""
+    if cr is None or age is None or not sex:
+        return None
+    from services.derived import _ckd_epi_egfr
+    return _ckd_epi_egfr(cr, age, sex)
+
+
+def _derive_bmi(height, weight):
+    if not height or not weight or height <= 0:
+        return None
+    return round(weight / ((height / 100.0) ** 2), 1)
+
+
 def _row_to_model_input(row) -> dict:
     """졸업자 raw 행 → predict_all 입력 dict.
 
@@ -189,15 +213,24 @@ def parse_graduates_long(df) -> list[dict]:
         if not comp_a:
             comp_a = _predict_comp(b)
 
-        egfr_b, egfr_a = _num(g(a, "egfr")), _num(g(b, "egfr"))
+        # v2.3.5: age·eGFR·BMI 는 병원이 손으로 계산하지 않아도 되도록 자동 파생.
+        #   age  = dob + visit_date (없으면 입력된 age 사용)
+        #   eGFR = CKD-EPI(cr, age, sex)  — 신장 기능 회복 사례 판정에 쓰임
+        #   BMI  = weight / (height/100)^2
+        _sex_v = _sex(g(a, "sex"))
+        _age = _int(g(a, "age")) or _derive_age(g(a, "dob"), g(a, "visit_date"))
+        _age_b = _int(g(b, "age")) or _derive_age(g(b, "dob"), g(b, "visit_date")) or _age
+        egfr_b = _num(g(a, "egfr")) or _derive_egfr(_num(g(a, "cr")), _age, _sex_v)
+        egfr_a = _num(g(b, "egfr")) or _derive_egfr(_num(g(b, "cr")), _age_b, _sex_v)
         out.append({
             "chart_no": _str(g(a, "chart_no")) or key,
             "name": _str(g(a, "name")),
-            "sex": _sex(g(a, "sex")),
-            "age": _int(g(a, "age")),
+            "sex": _sex_v,
+            "age": _age,
             "treatment_months": _int(g(a, "treatment_months")) or _int(g(b, "treatment_months")),
             "dm_duration_months": _int(g(a, "dm_duration_months")),
-            "init_bmi": _num(g(a, "bmi", "init_bmi")),
+            "init_bmi": _num(g(a, "bmi", "init_bmi")) or _derive_bmi(
+                _num(g(a, "height")), _num(g(a, "weight"))),
             "dm_med_count": _num(g(a, "dm_med_count")),
             "hba1c_before": before,
             "hba1c_after": after,
