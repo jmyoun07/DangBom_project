@@ -112,22 +112,44 @@ def _derive_bmi(height, weight):
     return round(weight / ((height / 100.0) ** 2), 1)
 
 
+# 날짜 컬럼 — 숫자로 변환하면 안 된다('19621102' → 19621102.0 이 되어 날짜 해석 실패).
+_DATE_COLS = {"dob", "visit_date", "exam_date", "measured_at"}
+# 문자·코드 컬럼 — 숫자 변환 대상 아님
+_TEXT_COLS = {"chart_no", "name", "sex", "visit_type", "goal", "phone", "neuro_improve"}
+
+
 def _row_to_model_input(row) -> dict:
     """졸업자 raw 행 → predict_all 입력 dict.
 
     raw 데이터셋은 모델 변수 48개를 모두 담고 있어(필수 13항목 포함) 그대로 예측 가능하다.
     컬럼명이 Patient 필드와 거의 동일하고, 개월 단위인 dm_duration_months 만 연 단위로 환산한다.
+
+    v2.3.5 (병원 실사용 대응): 병원 수기 입력의 흔한 형태를 견디게 한다.
+      · 날짜는 숫자 변환 금지 — '19621102' 를 숫자로 바꾸면 나이 산출이 실패해
+        해당 시점의 합병증 위험도가 통째로 계산되지 않았다.
+      · 단위/기호가 붙은 숫자('8.7%', '120 mg/dL')는 숫자만 추출 — 문자열 그대로
+        모델에 넘기면 필수값 누락으로 처리돼 합병증 위험도가 나오지 않았다.
+      · 나이는 dob+visit_date 로 미리 계산해 넣는다(모델 필수값).
     """
     d = {}
     for k in row.index:
+        key = str(k)
         v = row.get(k)
         if v is None or (isinstance(v, float) and math.isnan(v)) or v == "":
             continue
-        n = _num(v) if not isinstance(v, str) or re.fullmatch(r"-?\d+(?:\.\d+)?", v.strip()) else None
-        d[str(k)] = n if n is not None else v
+        if key in _DATE_COLS or key in _TEXT_COLS:
+            d[key] = v                      # 원값 보존 (날짜·문자)
+            continue
+        n = _num(v)                          # '8.7%' → 8.7, '6개월' → 6
+        d[key] = n if n is not None else v
     months = _num(row.get("dm_duration_months")) if "dm_duration_months" in row.index else None
     if months is not None:
         d["dm_duration"] = round(months / 12.0, 1)
+    # 모델 필수값인 나이를 명시적으로 채운다(입력 age 우선, 없으면 dob+검사일).
+    if _num(d.get("age")) is None:
+        age = _derive_age(d.get("dob"), d.get("visit_date"))
+        if age is not None:
+            d["age"] = age
     return d
 
 
