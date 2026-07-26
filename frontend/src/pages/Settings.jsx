@@ -269,7 +269,7 @@ export default function Settings() {
               <GraduationCap size={13} /> {'졸업자 데이터 (유사사례 분석)'}
             </p>
             <p className="text-xs text-gray-500 mb-3 leading-relaxed">
-              {"전지점 졸업자 통계 엑셀(.xlsx, '졸업자 리스트' 시트)을 업로드하면 유사사례 분석에 사용됩니다. 현재 "}
+              {'졸업자 데이터 파일(.xlsx/.csv)을 업로드하면 유사사례 분석에 사용됩니다. 시트 이름은 자동으로 찾습니다. 현재 '}
               <span className="font-semibold text-gray-700">{gradCount == null ? '…' : `${gradCount}명`}</span>
               {' 등록됨. 새 파일로 교체됩니다.'}
             </p>
