@@ -231,7 +231,9 @@ def parse_graduates_long(df) -> list[dict]:
             "dm_duration_months": _int(g(a, "dm_duration_months")),
             "init_bmi": _num(g(a, "bmi", "init_bmi")) or _derive_bmi(
                 _num(g(a, "height")), _num(g(a, "weight"))),
+            # v2.3.5: 초진/졸업 각각의 약 개수 → 화면에서 '2개 → 0개' 감소로 표시
             "dm_med_count": _num(g(a, "dm_med_count")),
+            "dm_med_count_after": _num(g(b, "dm_med_count")),
             "hba1c_before": before,
             "hba1c_after": after,
             "hba1c_drop": round(before - after, 2),

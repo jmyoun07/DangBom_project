@@ -287,8 +287,24 @@ function GradCaseCard({ c, primary }) {
           <p className="text-sm font-bold text-gray-800">{fmt(c.treatment_months, '개월')}</p>
         </div>
         <div>
-          <p className="text-[10px] text-gray-400 mb-0.5">당뇨약 개수</p>
-          <p className="text-sm font-bold text-gray-800">{c.dm_med_count != null ? `${c.dm_med_count}개` : '-'}</p>
+          {/* v2.3.5: 초진/졸업 값이 모두 있으면 '2개 → 0개' 감소로 표시.
+              구 데이터(치료 후 값 없음)는 기존처럼 단일 값만 보여준다. */}
+          <p className="text-[10px] text-gray-400 mb-0.5">
+            {c.dm_med_count_after != null ? '당뇨약 (전→후)' : '당뇨약 개수'}
+          </p>
+          <p className="text-sm font-bold text-gray-800">
+            {c.dm_med_count == null ? '-'
+              : c.dm_med_count_after == null ? `${c.dm_med_count}개`
+              : <>{c.dm_med_count}개 <span className="text-gray-300">→</span>{' '}
+                  <span className={c.dm_med_count_after < c.dm_med_count ? 'text-emerald-600' : 'text-gray-600'}>
+                    {c.dm_med_count_after}개
+                  </span></>}
+          </p>
+          {c.dm_med_count != null && c.dm_med_count_after != null && c.dm_med_count_after < c.dm_med_count && (
+            <p className="text-[10px] text-emerald-600 font-semibold">
+              {c.dm_med_count_after === 0 ? '단약 성공' : `▼ ${c.dm_med_count - c.dm_med_count_after}개 감소`}
+            </p>
+          )}
         </div>
       </div>
 

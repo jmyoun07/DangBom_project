@@ -111,6 +111,7 @@ def _case_payload(g: Graduate, card_type: str, match_label: str, match_detail: s
         "dm_duration_months": g.dm_duration_months,
         "init_bmi": g.init_bmi,
         "dm_med_count": g.dm_med_count,
+        "dm_med_count_after": g.dm_med_count_after,   # v2.3.5: '2개 → 0개' 감소 표시
         "hba1c_before": g.hba1c_before,
         "hba1c_after": g.hba1c_after,
         "hba1c_drop": g.hba1c_drop,

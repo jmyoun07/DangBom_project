@@ -142,6 +142,7 @@ def apply_lightweight_migrations() -> None:
                 "egfr": "FLOAT", "cpep_before": "FLOAT", "cpep_after": "FLOAT",
                 "egfr_before": "FLOAT", "egfr_after": "FLOAT",
                 "comp_before": "VARCHAR", "comp_after": "VARCHAR",
+                "dm_med_count_after": "FLOAT",   # v2.3.5 당뇨약 개수 치료 후
             }
             g_missing = {k: v for k, v in g_needed.items() if k not in g_cols}
             if g_missing:
@@ -374,7 +375,8 @@ class Graduate(Base):
     treatment_months = Column(Integer)    # 한약복용기간(개월) = 치료기간
     dm_duration_months = Column(Integer)  # 유병기간(개월차)
     init_bmi = Column(Float)              # 초진 BMI
-    dm_med_count = Column(Float)          # 당뇨약 개수 (숫자만, 아니면 None)
+    dm_med_count = Column(Float)          # 당뇨약 개수 — 치료 전(초진) 시점
+    dm_med_count_after = Column(Float)    # v2.3.5: 치료 후(졸업) 시점 — '2개 → 0개' 감소 표시용
     hba1c_before = Column(Float)          # 치료전 HbA1c
     hba1c_after = Column(Float)           # 치료후 HbA1c
     hba1c_drop = Column(Float)            # 감소 차이
