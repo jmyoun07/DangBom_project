@@ -131,9 +131,23 @@ class PatientResponse(PatientBase):
     #   → 조회는 저장된 값을 그대로 통과시키고, 범위 검증은 입력(PatientCreate/Update)에서만.
     # v2.2.9: phone(max_length)·sex(_validate_sex) 제약도 해제 — 레거시 값('남성'/'U'/36자 phone)
     #   이 저장돼 있으면 목록 전체가 500 되던 문제 봉쇄. (업로드는 Pydantic 우회로 이런 값 저장 가능)
+    # v2.3.6: 정수 컬럼(age·dm_med_count·생활습관 등)에 구버전이 저장한 소수/범위밖 값이 있으면
+    #   model_validate 가 ValidationError → 상세/목록이 통째로 500("환자 데이터를 불러올 수 없습니다").
+    #   조회는 저장값을 그대로 보여주는 것이 목적이므로 int 대신 float 로 받아 어떤 값이든 통과시킨다.
+    #   (입력 검증은 PatientCreate/PatientUpdate 에서 계속 강제)
     phone: Optional[str] = None
     sex: Optional[str] = None
-    age: Optional[int] = None
+    age: Optional[float] = None
+    dm_med_count: Optional[float] = None
+    dm_medication: Optional[float] = None
+    insulin_medication: Optional[float] = None
+    hypertension: Optional[float] = None
+    smoking: Optional[float] = None
+    drinking: Optional[float] = None
+    exercise: Optional[float] = None
+    dm_diagnosis_age: Optional[float] = None
+    dm_duration: Optional[float] = None
+    urine_nit: Optional[float] = None
     hba1c: Optional[float] = None
     c_peptide: Optional[float] = None
     fbg: Optional[float] = None

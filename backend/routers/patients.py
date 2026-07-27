@@ -284,7 +284,7 @@ def backup_patients(db: Session = Depends(get_db)):
 def list_patients(
     background: BackgroundTasks,
     page: int = Query(1, ge=1),
-    size: int = Query(8, ge=1, le=5000),  # v2.2.8: 프론트가 전량 조회 후 클라이언트 페이징 → 상한 상향
+    size: int = Query(8, ge=1, le=50000),  # v2.3.6: 5000 초과 시 목록이 통째로 실패하던 문제 → 상한 상향
     risk_level: str = Query(None),
     search: str = Query(None),
     db: Session = Depends(get_db),

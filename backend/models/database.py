@@ -173,6 +173,52 @@ def apply_lightweight_migrations() -> None:
         except Exception as e:
             print(f"[MIGRATION v2.1.3] risk_level 무효화 실패: {e}")
 
+        # ── v2.3.6 ── 정수 컬럼에 저장된 소수/범위밖 값 복구 (user_version 236)
+        # 구버전(≤v2.3.2)은 CSV 업로드가 Pydantic 을 거치지 않아 age=60.7, dm_med_count=2.5,
+        # drinking=2.5 같은 값이 Integer 컬럼에 저장될 수 있었다. 그 환자는 상세/목록 조회가
+        # ValidationError → 500 ("환자 데이터를 불러올 수 없습니다") 으로 아예 열리지 않았다.
+        # 응답 스키마 완화(v2.3.6)로 500 은 막았지만, 저장값 자체도 정상화해야 예측·표시가 맞다.
+        _INT_COLS = (
+            "age", "dm_diagnosis_age", "dm_duration", "dm_med_count",
+            "dm_medication", "insulin_medication", "hypertension",
+            "smoking", "drinking", "exercise", "urine_nit",
+        )
+        try:
+            with engine.begin() as conn:
+                cur_ver = conn.execute(text("PRAGMA user_version")).scalar() or 0
+                if cur_ver < 236:
+                    fixed = 0
+                    for col in _INT_COLS:
+                        if col not in existing_cols:
+                            continue
+                        # 소수 → 반올림 정수 (CAST 로 내림되지 않게 ROUND 먼저)
+                        fixed += conn.execute(text(
+                            f"UPDATE patients SET {col} = CAST(ROUND({col}) AS INTEGER) "
+                            f"WHERE {col} IS NOT NULL AND {col} != CAST({col} AS INTEGER)"
+                        )).rowcount
+                    # 0/1 이진 플래그의 범위밖 값은 결측 처리(임의 해석 금지)
+                    for col in ("dm_medication", "insulin_medication", "hypertension",
+                                "smoking", "urine_nit"):
+                        if col in existing_cols:
+                            fixed += conn.execute(text(
+                                f"UPDATE patients SET {col} = NULL "
+                                f"WHERE {col} IS NOT NULL AND {col} NOT IN (0, 1)"
+                            )).rowcount
+                    # 상한 초과값 정리 (스키마 제약과 동일 기준)
+                    for col, lo, hi in (("dm_med_count", 0, 30), ("age", 0, 120),
+                                        ("dm_diagnosis_age", 0, 120), ("dm_duration", 0, 120),
+                                        ("drinking", 0, 6), ("exercise", 0, 6)):
+                        if col in existing_cols:
+                            fixed += conn.execute(text(
+                                f"UPDATE patients SET {col} = NULL "
+                                f"WHERE {col} IS NOT NULL AND ({col} < {lo} OR {col} > {hi})"
+                            )).rowcount
+                    if fixed:
+                        print(f"[MIGRATION v2.3.6] 정수 컬럼 이상값 {fixed}건 정리 (조회 500 원인 제거)")
+                    conn.execute(text("PRAGMA user_version = 236"))
+        except Exception as e:
+            print(f"[MIGRATION v2.3.6] 정수 컬럼 정리 실패(조회는 정상 동작): {e}")
+
         # ── v2.1.3 — measurement_history (patient_id, measured_at) unique index ──
         # 기존 DB 에 unique constraint 없을 경우 추가. 중복이 있다면 가장 최근 1건만 보존.
         try:

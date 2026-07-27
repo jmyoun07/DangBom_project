@@ -175,7 +175,9 @@ export default function PatientList() {
           // Backend doesn't support advanced filters yet; fetch the full set and post-filter/paginate client-side.
           // v2.2.8: size 를 전체 환자 수에 맞춰 조회 → 1706명 중 100명만 보이던 문제 + total 오류 해소.
           //   (장기적으로는 정렬/고급필터까지 서버사이드 페이징으로 옮기는 것이 정석)
-          const params = { page: 1, size: Math.min(Math.max(count || 200, 200), 5000) };
+          // v2.3.6: 상한 5000 이면 환자가 그 이상일 때 서버가 422 로 거부해 목록이 통째로 실패했다.
+          //   백엔드 상한(50000)과 맞춰 병원 규모가 커져도 목록이 끊기지 않게 한다.
+          const params = { page: 1, size: Math.min(Math.max(count || 200, 200), 50000) };
           if (search) params.search = search;
           if (riskLevel) params.risk_level = riskLevel;
           const res = await api.get('/patients', { params });
