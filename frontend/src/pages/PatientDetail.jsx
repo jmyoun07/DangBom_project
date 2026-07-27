@@ -409,6 +409,13 @@ export default function PatientDetail() {
                 const modelKey = modelNameMap[card.type];
                 const pred = predictions?.[modelKey];
                 const cm = diseaseCardMetric(modelKey, factorVal);
+                // v2.4.0: 이 환자 예측에 실제로 가장 크게 기여한 변수(SHAP)를 우선 표시.
+                //   미지원 모델(Stacking·EasyEnsemble)이면 기존 질환별 고정 지표로 폴백.
+                const top = pred?.contributions?.[0];
+                const metricLabel = top ? top.label : (cm ? cm.label : card.metricLabel);
+                const metricValue = top
+                  ? `${top.value}${top.unit}`
+                  : (cm ? `${cm.value}${cm.unit}` : '--');
                 return (
                   <RiskCard
                     key={card.type}
@@ -416,8 +423,9 @@ export default function PatientDetail() {
                     name={card.name}
                     englishName={card.englishName}
                     level={pred?.level}
-                    metricLabel={cm ? cm.label : card.metricLabel}
-                    metricValue={cm ? `${cm.value}${cm.unit}` : '--'}
+                    metricLabel={metricLabel}
+                    metricValue={metricValue}
+                    contributions={pred?.contributions}
                     score={pred?.display_score ?? pred?.score}
                     available={pred?.available ?? false}
                     insufficient={pred?.risk_source === 'insufficient_data'}

@@ -61,6 +61,7 @@ export default function RiskCard({
   level,
   metricLabel,
   metricValue,
+  contributions = null,   // v2.4.0: 이 환자 예측에 기여한 변수(SHAP) 상위 N — 있으면 환자별 근거 표시
   score,
   available = true,
   percentile = null,
@@ -77,6 +78,7 @@ export default function RiskCard({
   const showEnglish = settings?.showEnglishLabels !== false;
   const displayMetricLabel = showScore ? '위험지수' : metricLabel;
   const displayMetricValue = showScore ? (score == null ? '--' : `${Math.round(score)}/100`) : metricValue;
+  const hasContrib = Array.isArray(contributions) && contributions.length > 0;
   // v2.1.2 \u2014 KNHANES \uB3D9\uC77C \uC5F0\uB839\uB300 \uBC31\uBD84\uC704 \uD45C\uC2DC.
   // percentile = { percentile: 73, top_percent: 27, bucket: "60-69", n: 1299 }
   //   \u2193 "\uC0C1\uC704 X%" \uB85C \uD45C\uC2DC (X = 100 - percentile)
@@ -148,10 +150,28 @@ export default function RiskCard({
       {available && (
         <>
           <div className="flex justify-between items-baseline mb-2">
-            <span className="text-xs text-gray-500">{displayMetricLabel}</span>
+            <span className="text-xs text-gray-500 inline-flex items-center gap-1">
+              {displayMetricLabel}
+              {/* v2.4.0: 이 환자 예측에 실제로 기여한 변수임을 표시 (고정 지표와 구분) */}
+              {!showScore && hasContrib && (
+                <span
+                  className="text-[9px] px-1 py-px rounded bg-accent-soft text-accent font-medium"
+                  title="이 환자의 예측에 가장 크게 기여한 변수입니다 (환자마다 다름)"
+                >
+                  {'환자별'}
+                </span>
+              )}
+            </span>
             <span className="text-sm font-bold text-gray-800">{displayMetricValue}</span>
           </div>
           <RiskBar score={score || 0} level={level} />
+          {/* 2·3순위 기여 변수 — 1순위만으로는 근거가 얇아 함께 보여준다 */}
+          {!showScore && hasContrib && contributions.length > 1 && (
+            <p className="mt-1.5 text-[10px] text-gray-400 leading-tight">
+              {'다음 요인: '}
+              {contributions.slice(1, 3).map((c) => `${c.label} ${c.value}${c.unit}`).join(' · ')}
+            </p>
+          )}
           {primaryReason && (
             <p className="mt-1.5 text-[10px] text-amber-700 leading-tight">
               {primaryReason.message}

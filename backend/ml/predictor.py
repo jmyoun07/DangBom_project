@@ -1183,6 +1183,17 @@ def predict_single(model_name: str, features: dict) -> dict:
             "risk_sources": ["ml_model"],  # 다중 출처 누적 (HbA1c safety floor 등)
             "clinical_flags": [],
         }
+        # v2.4.0: 이 환자의 예측에 실제로 기여한 변수(SHAP). 고정 지표 대신 환자별 근거 제시.
+        #   미지원 모델(Stacking·EasyEnsemble 등)이면 None → UI 는 기존 고정 지표로 폴백.
+        #   부가 정보이므로 실패해도 예측 자체엔 영향 없게 격리한다.
+        try:
+            from ml.contributions import compute_contributions
+            result["contributions"] = compute_contributions(
+                model_name, pkg, X.values, features
+            )
+        except Exception as e:
+            logger.info("[SHAP] %s 기여도 생략: %s", model_name, e)
+            result["contributions"] = None
         # usage_warning 은 시연용 신뢰감 유지를 위해 응답에서 제외 (모델 메타는 pkl 안에 유지)
         return result
     except Exception as e:
