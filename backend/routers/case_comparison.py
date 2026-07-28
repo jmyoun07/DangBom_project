@@ -48,6 +48,21 @@ def _patient_to_dict(p: Patient) -> dict:
     return {c.name: getattr(p, c.name) for c in p.__table__.columns}
 
 
+def _pick_varied(pool, seed_id, key, top_k: int = 8):
+    """'극적 개선' 후보 상위 top_k 중 환자별로 다른 한 명을 결정론적으로 고른다.
+
+    v2.4.1 (병원 지적: "선택된 몇 명만 계속 노출될 것 같습니다"):
+    이전 max(key) 방식은 감소폭 1위 한 명이 전 환자에게 반복 노출됐다(150명 중 109명).
+    상위권(top_k) 안에서만 고르므로 '극적 사례'라는 성격은 유지되고,
+    환자 id 로 분산해 사례가 골고루 소개된다. 같은 환자는 항상 같은 사례를 보므로
+    조회할 때마다 바뀌지 않는다(의료진 신뢰 유지).
+    """
+    if not pool:
+        return None
+    ranked = sorted(pool, key=key, reverse=True)[:max(1, top_k)]
+    return ranked[(seed_id or 0) % len(ranked)]
+
+
 def _worst_feature(hba1c, age, dm_years, bmi):
     """환자의 가장 취약한(severity 최고) 지표를 고른다."""
     sev = {}
@@ -246,7 +261,11 @@ def get_case_comparison(patient_id: int, db: Session = Depends(get_db)):
         if pool and pv is not None:
             pool.sort(key=lambda g: abs(_grad_feature_value(g, feature) - pv))
             near = pool[:max(5, len(pool) * 4 // 10)]
-            g2 = max(near, key=lambda g: (g.hba1c_drop or 0))
+            # v2.4.1 (병원 지적): 이전에는 max(hba1c_drop) 로 '감소폭 1위' 한 명만 뽑아
+            #   150명 중 109명(73%)에게 같은 졸업자가 노출됐다. 극적인 사례라는 성격은
+            #   유지하되(상위권만 후보), 환자별로 분산되도록 고른다.
+            #   환자 id 기반 결정론적 선택 — 같은 환자는 항상 같은 사례를 본다(신뢰 유지).
+            g2 = _pick_varied(near, patient_id, key=lambda g: (g.hba1c_drop or 0))
             gv = _grad_feature_value(g2, feature)
             fl = _FEATURE_LABEL.get(feature, feature)
             cases.append(_case_payload(
@@ -261,7 +280,7 @@ def get_case_comparison(patient_id: int, db: Session = Depends(get_db)):
         rest = [g for g in candidates if g.id not in used_ids]
         if not rest:
             break
-        g = max(rest, key=lambda g: (g.hba1c_drop or 0))
+        g = _pick_varied(rest, patient_id, key=lambda g: (g.hba1c_drop or 0))
         cases.append(_case_payload(
             g, "dramatic", "극적 개선 사례",
             f"HbA1c {g.hba1c_before}→{g.hba1c_after}% (Δ{g.hba1c_drop}) 개선", 70,
