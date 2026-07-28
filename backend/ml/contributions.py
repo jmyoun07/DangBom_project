@@ -110,18 +110,20 @@ FEATURE_LABELS = {
 # 설명하므로 안전망 사유를 모른다. 그대로 두면 "나이 72세 → 고위험 / 나이 73세 → 중위험"
 # 처럼 같은 값에 다른 등급이 붙어 모순으로 보인다(병원 지적, 2026-07).
 # → 등급을 결정한 변수를 1순위로 제시하기 위한 매핑.
+#   값은 (변수명, 화면에 함께 보여줄 기준 문구).
+#   배지 대신 "15.7% (기준 11% 초과)" 처럼 값 옆에 붙여 의료진이 바로 이해하게 한다.
 FLAG_TO_FEATURE = {
-    "hba1c_very_high": "HE_HbA1c",
-    "hba1c_high": "HE_HbA1c",
-    "long_duration_high_a1c": "HE_HbA1c",
-    "cpep_floor": "C_peptide",
-    "cpep_low_strong": "C_peptide",
-    "cpep_low_medium": "C_peptide",
-    "cpep_low_mild": "C_peptide",
-    "renal_high_floor": "eGFR",
-    "severe_hypertension": "SBP",
-    "ldl_very_high": "LDL_calc",
-    "homa_ir_q4": "HOMA_IR",
+    "hba1c_very_high":       ("HE_HbA1c", "기준 11% 초과"),
+    "hba1c_high":            ("HE_HbA1c", "기준 9% 초과"),
+    "long_duration_high_a1c": ("HE_HbA1c", "유병기간 김 + 조절 불량"),
+    "cpep_floor":            ("C_peptide", "정상 하한 1.0 미만"),
+    "cpep_low_strong":       ("C_peptide", "기준 0.5 미만"),
+    "cpep_low_medium":       ("C_peptide", "기준 0.7 미만"),
+    "cpep_low_mild":         ("C_peptide", "정상 하한 1.0 미만"),
+    "renal_high_floor":      ("eGFR", "신장 기능 손상 기준"),
+    "severe_hypertension":   ("SBP", "중증 고혈압 기준"),
+    "ldl_very_high":         ("LDL_calc", "기준 190 이상"),
+    "homa_ir_q4":            ("HOMA_IR", "인슐린저항성 상위 25%"),
 }
 
 _EXPLAINER_CACHE: dict[int, object] = {}
@@ -266,14 +268,14 @@ def _raw_value(feature: str, raw_features: dict):
     return round(f, 1) if abs(f) >= 10 else round(f, 2)
 
 
-def floor_feature_from_flags(clinical_flags) -> str | None:
-    """등급을 결정한 임상 안전망 플래그 → 해당 변수명. 없으면 None."""
+def floor_feature_from_flags(clinical_flags) -> tuple[str, str] | None:
+    """등급을 결정한 임상 안전망 플래그 → (변수명, 기준 문구). 없으면 None."""
     for f in (clinical_flags or []):
         if not isinstance(f, dict) or not f.get("affects_level"):
             continue
-        feat = FLAG_TO_FEATURE.get(f.get("type"))
-        if feat:
-            return feat
+        hit = FLAG_TO_FEATURE.get(f.get("type"))
+        if hit:
+            return hit
     return None
 
 

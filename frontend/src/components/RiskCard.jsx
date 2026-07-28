@@ -79,8 +79,10 @@ export default function RiskCard({
   const displayMetricLabel = showScore ? '위험지수' : metricLabel;
   const displayMetricValue = showScore ? (score == null ? '--' : `${Math.round(score)}/100`) : metricValue;
   const hasContrib = Array.isArray(contributions) && contributions.length > 0;
-  // 1순위가 임상 안전망(수치가 기준 초과)으로 결정된 경우 — 배지·설명을 달리한다
-  const byClinicalRule = hasContrib && contributions[0]?.by_clinical_rule === true;
+  // 1순위가 임상 안전망으로 결정된 경우의 기준 문구 (예: '기준 11% 초과'). 없으면 null.
+  const ruleNote = (hasContrib && contributions[0]?.by_clinical_rule)
+    ? contributions[0]?.rule_note || null
+    : null;
   // v2.1.2 \u2014 KNHANES \uB3D9\uC77C \uC5F0\uB839\uB300 \uBC31\uBD84\uC704 \uD45C\uC2DC.
   // percentile = { percentile: 73, top_percent: 27, bucket: "60-69", n: 1299 }
   //   \u2193 "\uC0C1\uC704 X%" \uB85C \uD45C\uC2DC (X = 100 - percentile)
@@ -154,28 +156,17 @@ export default function RiskCard({
           <div className="flex justify-between items-baseline mb-2">
             <span className="text-xs text-gray-500 inline-flex items-center gap-1">
               {displayMetricLabel}
-              {/* v2.4.1: 등급이 임상 기준(안전망)으로 결정된 경우 그 사실을 명시한다.
-                  안 그러면 '나이 73세 → 고위험 / 나이 73세 → 중위험' 처럼 같은 값에
-                  다른 등급이 붙어 모순으로 보인다(실제 이유는 HbA1c 등 다른 변수). */}
-              {!showScore && hasContrib && (
-                byClinicalRule ? (
-                  <span
-                    className="text-[9px] px-1 py-px rounded bg-amber-100 text-amber-700 font-medium"
-                    title="ML 점수와 별개로, 이 수치가 임상 기준을 넘어 등급이 결정됐습니다"
-                  >
-                    {'임상기준'}
-                  </span>
-                ) : (
-                  <span
-                    className="text-[9px] px-1 py-px rounded bg-accent-soft text-accent font-medium"
-                    title="이 환자의 예측에 가장 크게 기여한 변수입니다 (환자마다 다름)"
-                  >
-                    {'환자별'}
-                  </span>
-                )
+            </span>
+            <span className="text-sm font-bold text-gray-800">
+              {displayMetricValue}
+              {/* v2.4.1: 임상 기준으로 등급이 결정된 경우 기준을 값 옆에 바로 표기.
+                  배지('임상기준')는 의미 전달이 약해 기준 문구로 대체 — 예 "15.7% (기준 11% 초과)" */}
+              {!showScore && ruleNote && (
+                <span className="ml-1 text-[10px] font-medium text-amber-700">
+                  {`(${ruleNote})`}
+                </span>
               )}
             </span>
-            <span className="text-sm font-bold text-gray-800">{displayMetricValue}</span>
           </div>
           <RiskBar score={score || 0} level={level} />
           {/* 2·3순위 기여 변수 — 1순위만으로는 근거가 얇아 함께 보여준다 */}

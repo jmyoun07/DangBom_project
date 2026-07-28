@@ -1313,9 +1313,10 @@ def predict_all(patient_data: dict, enabled_rules=None) -> dict:
             #   결정한 게 아니므로, 질환별 SHAP 근거를 그대로 두는 것이 정확하다.
             if info.get("risk_source") != "clinical_floor":
                 continue
-            feat = floor_feature_from_flags(info.get("clinical_flags"))
-            if not feat:
+            hit = floor_feature_from_flags(info.get("clinical_flags"))
+            if not hit:
                 continue
+            feat, rule_note = hit
             conts = info["contributions"]
             idx = next((i for i, c in enumerate(conts) if c.get("feature") == feat), None)
             if idx is not None:
@@ -1334,6 +1335,7 @@ def predict_all(patient_data: dict, enabled_rules=None) -> dict:
                     "value": shown, "shap": 0.0, "direction": "up",
                 }
             item["by_clinical_rule"] = True
+            item["rule_note"] = rule_note   # UI: "15.7% (기준 11% 초과)" 로 값 옆에 표시
             info["contributions"] = [item] + conts[:2]
     except Exception as e:
         logger.info("[SHAP] 안전망 기준 재정렬 생략: %s", e)
