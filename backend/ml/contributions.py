@@ -128,6 +128,94 @@ def _get_explainer(model):
         return None
 
 
+def _flatten_shap(sv) -> np.ndarray | None:
+    """SHAP 출력을 (n_features,) 1차원으로 정규화. 양성 클래스 기준."""
+    arr = np.asarray(sv)
+    if arr.ndim == 3:        # (n, features, classes)
+        return arr[0, :, -1]
+    if arr.ndim == 2:        # (n, features) 또는 (classes, features)
+        return arr[0] if arr.shape[0] == 1 else arr[-1]
+    if arr.ndim == 1:
+        return arr
+    return None
+
+
+def _shap_stacking(pkg: dict, X_scaled) -> np.ndarray | None:
+    """Stacking(base 3 → meta LR) 기여도.
+
+    base 모델(xgb·lgb·cb) 각각의 SHAP 을 meta LogisticRegression 계수로 가중 합산한다.
+    meta 가 base 확률을 선형결합하므로, 그 계수를 가중치로 쓰면 최종 예측에 대한
+    근사 기여도가 된다. (예: dkd meta 계수 [0.10, -0.55, 5.54] → cb 기여가 지배적)
+    """
+    st = pkg.get("stacking") or {}
+    base_models, order = st.get("base_models"), st.get("base_order")
+    meta = st.get("meta_model")
+    if not base_models or not order:
+        return None
+
+    weights = None
+    coef = getattr(meta, "coef_", None)
+    if coef is not None and len(coef) and len(coef[0]) == len(order):
+        weights = np.asarray(coef[0], dtype=float)
+    if weights is None:
+        weights = np.ones(len(order), dtype=float)
+
+    total, used = None, 0
+    for w, name in zip(weights, order):
+        bm = base_models.get(name)
+        if bm is None:
+            continue
+        expl = _get_explainer(bm)
+        if expl is None:
+            continue
+        try:
+            s = _flatten_shap(expl.shap_values(X_scaled))
+        except Exception:
+            continue
+        if s is None:
+            continue
+        total = (w * s) if total is None else (total + w * s)
+        used += 1
+    return total if used else None
+
+
+def _shap_easy_ensemble(model, max_estimators: int = 50) -> "callable | None":
+    """EasyEnsemble(AdaBoost 앙상블) 기여도 계산기.
+
+    TreeExplainer 가 AdaBoostClassifier 를 직접 지원하지 않으므로, 내부
+    DecisionTree 각각의 SHAP 을 AdaBoost 가중치(estimator_weights_)로 합산한다.
+    실측 25ms/환자 수준이라 실시간 예측에 무리 없다.
+    """
+    ests = getattr(model, "estimators_", None)
+    if not ests:
+        return None
+
+    def _compute(X_scaled):
+        total, used = None, 0
+        for est in ests[:max_estimators]:
+            clf = est.named_steps.get("classifier") if hasattr(est, "named_steps") else est
+            trees = getattr(clf, "estimators_", None)
+            if not trees:
+                continue
+            w_all = getattr(clf, "estimator_weights_", None)
+            for i, tree in enumerate(trees):
+                expl = _get_explainer(tree)
+                if expl is None:
+                    continue
+                try:
+                    s = _flatten_shap(expl.shap_values(X_scaled))
+                except Exception:
+                    continue
+                if s is None:
+                    continue
+                w = float(w_all[i]) if w_all is not None and i < len(w_all) else 1.0
+                total = (w * s) if total is None else (total + w * s)
+                used += 1
+        return total if used else None
+
+    return _compute
+
+
 # 값 대신 상태 문구로 보여줄 범주형 변수 ('성별 2.0' 같은 무의미한 표시 방지)
 _CATEGORICAL = {
     "sex": {1: "남", 2: "여"},
@@ -172,23 +260,25 @@ def compute_contributions(disease: str, pkg: dict, X_scaled, raw_features: dict,
         [{feature, label, unit, value, shap, direction}] — shap 내림차순.
         미지원 모델·계산 실패 시 None (호출부는 기존 고정 표시로 폴백).
     """
-    model = (pkg or {}).get("model")
-    features = (pkg or {}).get("features")
-    if model is None or not features:
+    pkg = pkg or {}
+    features = pkg.get("features")
+    if not features:
         return None
-
-    expl = _get_explainer(model)
-    if expl is None:
-        return None
+    model = pkg.get("model")
+    model_type = str(pkg.get("model_type") or "")
 
     try:
-        sv = expl.shap_values(X_scaled)
-        arr = np.asarray(sv)
-        if arr.ndim == 3:        # (n, features, classes) — 양성 클래스
-            arr = arr[0, :, -1]
-        elif arr.ndim == 2:
-            arr = arr[0]
-        if arr.shape[0] != len(features):
+        if model is None and pkg.get("stacking"):
+            # 신장질환: base 3 모델 SHAP 을 meta LR 계수로 가중 합산
+            arr = _shap_stacking(pkg, X_scaled)
+        elif "easyensemble" in model_type.lower().replace(" ", ""):
+            # 심혈관: AdaBoost 내부 트리들을 가중 합산 (TreeExplainer 직접 미지원)
+            fn = _shap_easy_ensemble(model)
+            arr = fn(X_scaled) if fn else None
+        else:
+            expl = _get_explainer(model)
+            arr = _flatten_shap(expl.shap_values(X_scaled)) if expl else None
+        if arr is None or len(arr) != len(features):
             return None
     except Exception as e:
         logger.info("[SHAP] %s 기여도 계산 실패: %s", disease, e)

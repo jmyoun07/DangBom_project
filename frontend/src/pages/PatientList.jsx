@@ -249,6 +249,8 @@ export default function PatientList() {
   const endIdx = Math.min(page * size, total);
 
   const activeFilterCount = Object.values(filters).filter(Boolean).length;
+  // 검색·위험도·고급필터 중 하나라도 걸려 있으면 total 은 '전체'가 아니라 '결과 수'다.
+  const isFiltered = Boolean(search) || Boolean(riskLevel) || activeFilterCount > 0;
 
   // Keyboard shortcuts: ←/→ pagination, / to focus search, Esc to clear search
   useEffect(() => {
@@ -556,8 +558,22 @@ export default function PatientList() {
       {/* Pagination */}
       <div className="flex justify-between items-center">
         <div className="flex items-center gap-3">
+          {/* v2.4.1: total \uC740 '\uD544\uD130 \uC801\uC6A9 \uD6C4' \uAC1C\uC218\uB2E4. \uD544\uD130\uAC00 \uAC78\uB838\uB294\uB370 '\uC804\uCCB4 N\uBA85'\uC774\uB77C\uACE0 \uC4F0\uBA74
+              \uB4F1\uB85D \uD658\uC790\uAC00 \uADF8\uB9CC\uD07C\uBFD0\uC778 \uAC83\uCC98\uB7FC \uC624\uD574\uB41C\uB2E4(\uC124\uC815 \uD654\uBA74\uC758 \uC804\uCCB4 \uC218\uC640 \uBD88\uC77C\uCE58).
+              \u2192 \uD544\uD130 \uC911\uC77C \uB54C\uB294 '\uAC80\uC0C9 \uACB0\uACFC N\uBA85 (\uC804\uCCB4 M\uBA85)' \uC73C\uB85C \uAD6C\uBD84\uD574 \uD45C\uC2DC\uD55C\uB2E4. */}
           <p className="text-sm text-gray-500">
-            {'\uC804\uCCB4'} <span className="font-semibold text-gray-700">{total}</span>{'\uBA85 \uC911'} {startIdx}-{endIdx} {'\uD45C\uC2DC \uC911'}
+            {isFiltered ? (
+              <>
+                {'\uAC80\uC0C9 \uACB0\uACFC '}<span className="font-semibold text-gray-700">{total}</span>{'\uBA85 \uC911 '}
+                {startIdx}-{endIdx} {'\uD45C\uC2DC \uC911'}
+                {count != null && <span className="text-gray-400">{` (\uC804\uCCB4 ${count}\uBA85)`}</span>}
+              </>
+            ) : (
+              <>
+                {'\uC804\uCCB4 '}<span className="font-semibold text-gray-700">{total}</span>{'\uBA85 \uC911 '}
+                {startIdx}-{endIdx} {'\uD45C\uC2DC \uC911'}
+              </>
+            )}
           </p>
           {/* D9: 단축키 힌트 — sm+ 에서 화살표/검색 모두, 모바일은 / 만 노출 (공간 협소) */}
           <span className="flex items-center gap-2 text-[10px] text-gray-400" aria-label="\ud0a4\ubcf4\ub4dc \ub2e8\ucd95\ud0a4 \uc548\ub0b4">
