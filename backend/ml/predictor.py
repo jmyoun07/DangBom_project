@@ -1299,6 +1299,45 @@ def predict_all(patient_data: dict, enabled_rules=None) -> dict:
                 info["score"], info.get("level"), name, age=floor_age
             )
 
+    # v2.4.1: 임상 안전망으로 등급이 결정된 합병증은 그 변수를 1순위 근거로 올린다.
+    #   안전망은 여기(apply_clinical_floor 이후)에서야 확정되므로 predict_single 이 아니라
+    #   이 시점에 재정렬한다. 안 하면 "나이 72세 → 고위험"(실제 이유 HbA1c 15%)처럼
+    #   같은 값에 다른 등급이 붙어 모순으로 보인다.
+    try:
+        from ml.contributions import floor_feature_from_flags
+        for name, info in result.items():
+            if not (isinstance(info, dict) and info.get("contributions")):
+                continue
+            # 안전망이 '실제로 등급을 올린' 경우에만 그 변수를 1순위로 올린다.
+            #   플래그만 붙고 등급이 그대로면(ML 이 이미 같은 등급) 그 변수가 등급을
+            #   결정한 게 아니므로, 질환별 SHAP 근거를 그대로 두는 것이 정확하다.
+            if info.get("risk_source") != "clinical_floor":
+                continue
+            feat = floor_feature_from_flags(info.get("clinical_flags"))
+            if not feat:
+                continue
+            conts = info["contributions"]
+            idx = next((i for i, c in enumerate(conts) if c.get("feature") == feat), None)
+            if idx is not None:
+                item = conts.pop(idx)
+            else:
+                # 안전망 변수가 SHAP 상위에 없으면(예: 치매 고위험인데 원인은 HbA1c 15%)
+                # 환자 실측값으로 항목을 만들어 1순위에 넣는다 — 그게 실제 등급 근거다.
+                from ml.contributions import FEATURE_LABELS, _raw_value
+                shown = _raw_value(feat, features)
+                if shown is None:
+                    continue
+                label, unit = FEATURE_LABELS.get(feat, (feat, ""))
+                item = {
+                    "feature": feat, "label": label,
+                    "unit": "" if isinstance(shown, str) else unit,
+                    "value": shown, "shap": 0.0, "direction": "up",
+                }
+            item["by_clinical_rule"] = True
+            info["contributions"] = [item] + conts[:2]
+    except Exception as e:
+        logger.info("[SHAP] 안전망 기준 재정렬 생략: %s", e)
+
     # KNHANES 코호트 대비 percentile (동일 연령대) — 부가 정보, 실패해도 예측엔 영향 없음.
     try:
         from services.percentile import enrich_predictions

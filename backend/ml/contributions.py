@@ -105,6 +105,25 @@ FEATURE_LABELS = {
     "sex": ("성별", ""),
 }
 
+# 임상 안전망(clinical floor) 플래그 → 그 등급을 만든 실제 변수.
+# 안전망으로 등급이 올라간 환자는 ML 점수가 낮아도 고위험이 되는데, SHAP 은 ML 점수만
+# 설명하므로 안전망 사유를 모른다. 그대로 두면 "나이 72세 → 고위험 / 나이 73세 → 중위험"
+# 처럼 같은 값에 다른 등급이 붙어 모순으로 보인다(병원 지적, 2026-07).
+# → 등급을 결정한 변수를 1순위로 제시하기 위한 매핑.
+FLAG_TO_FEATURE = {
+    "hba1c_very_high": "HE_HbA1c",
+    "hba1c_high": "HE_HbA1c",
+    "long_duration_high_a1c": "HE_HbA1c",
+    "cpep_floor": "C_peptide",
+    "cpep_low_strong": "C_peptide",
+    "cpep_low_medium": "C_peptide",
+    "cpep_low_mild": "C_peptide",
+    "renal_high_floor": "eGFR",
+    "severe_hypertension": "SBP",
+    "ldl_very_high": "LDL_calc",
+    "homa_ir_q4": "HOMA_IR",
+}
+
 _EXPLAINER_CACHE: dict[int, object] = {}
 _UNSUPPORTED: set[int] = set()
 
@@ -247,8 +266,19 @@ def _raw_value(feature: str, raw_features: dict):
     return round(f, 1) if abs(f) >= 10 else round(f, 2)
 
 
+def floor_feature_from_flags(clinical_flags) -> str | None:
+    """등급을 결정한 임상 안전망 플래그 → 해당 변수명. 없으면 None."""
+    for f in (clinical_flags or []):
+        if not isinstance(f, dict) or not f.get("affects_level"):
+            continue
+        feat = FLAG_TO_FEATURE.get(f.get("type"))
+        if feat:
+            return feat
+    return None
+
+
 def compute_contributions(disease: str, pkg: dict, X_scaled, raw_features: dict,
-                          top_n: int = 3) -> list[dict] | None:
+                          top_n: int = 3, floor_feature: str | None = None) -> list[dict] | None:
     """그 환자의 예측에 기여한 변수 상위 N개.
 
     Args:
@@ -319,4 +349,28 @@ def compute_contributions(disease: str, pkg: dict, X_scaled, raw_features: dict,
     if picked:
         cutoff = abs(picked[0]["shap"]) * 0.1
         picked = [p for p in picked if abs(p["shap"]) >= cutoff]
+
+    # 임상 안전망으로 등급이 결정된 경우, 그 변수를 1순위로 올린다.
+    #   SHAP 은 ML 점수만 설명하므로 안전망 사유를 모른다. 그대로 두면 화면에
+    #   "나이 72세 → 고위험"(실제 이유는 HbA1c 15%)처럼 잘못된 근거가 표시된다.
+    if floor_feature:
+        idx = next((i for i, s in enumerate(picked) if s["feature"] == floor_feature), None)
+        if idx is not None:
+            item = picked.pop(idx)
+        else:
+            shown = _raw_value(floor_feature, raw_features)
+            if shown is None:
+                return picked or None
+            label, unit = FEATURE_LABELS.get(floor_feature, (floor_feature, ""))
+            fi = features.index(floor_feature) if floor_feature in features else None
+            item = {
+                "feature": floor_feature, "label": label,
+                "unit": "" if isinstance(shown, str) else unit,
+                "value": shown,
+                "shap": round(float(arr[fi]), 4) if fi is not None else 0.0,
+                "direction": "up",
+            }
+        item["by_clinical_rule"] = True   # UI: '임상 기준으로 등급 결정' 표시용
+        picked = [item] + picked[: top_n - 1]
+
     return picked or None
