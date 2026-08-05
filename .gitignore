@@ -106,3 +106,8 @@ codex_v213_full19_prediction_probe.csv
 # 레거시 Inno Setup (Tauri nsis/msi 사용). version_info.txt 만 spec 이 참조하므로 유지
 /installer/*
 !/installer/version_info.txt
+
+# 실제 환자·졸업자 개인정보 (실명/차트번호/연락처) — 저장소에 올리지 않는다.
+# 병원 전달은 암호화 파일로 별도 수행. 양식/코딩북(가상 예시)만 저장소에 둔다.
+/docs/병원배포/졸업자_임상데이터_업로드용.xlsx
+/docs/병원배포/*_실데이터*.xlsx
