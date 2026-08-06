@@ -14,7 +14,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import pandas as pd
 from services.graduates import parse_graduates_any
 
-TPL = str(Path(__file__).resolve().parent.parent.parent / "졸업자_RAW_데이터셋_양식_병원발송용.xlsx")
+_ROOT = Path(__file__).resolve().parent.parent.parent
+_NAME = "졸업자_RAW_데이터셋_양식_병원발송용.xlsx"
+# 저장소에 커밋된 위치는 docs/병원배포/. 루트 사본은 작업 중 남은 것이라 새로 clone 하면 없다.
+TPL = next((str(p) for p in (_ROOT / "docs" / "병원배포" / _NAME, _ROOT / _NAME) if p.exists()), None)
+if TPL is None:
+    raise SystemExit(f"양식 파일을 찾을 수 없다: docs/병원배포/{_NAME}")
 base = pd.read_excel(TPL, sheet_name="데이터")
 
 def to_xlsx(df, sheet="데이터", extra_sheets=False):
