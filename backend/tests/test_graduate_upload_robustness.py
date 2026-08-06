@@ -14,13 +14,39 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import pandas as pd
 from services.graduates import parse_graduates_any
 
-_ROOT = Path(__file__).resolve().parent.parent.parent
-_NAME = "졸업자_RAW_데이터셋_양식_병원발송용.xlsx"
-# 저장소에 커밋된 위치는 docs/병원배포/. 루트 사본은 작업 중 남은 것이라 새로 clone 하면 없다.
-TPL = next((str(p) for p in (_ROOT / "docs" / "병원배포" / _NAME, _ROOT / _NAME) if p.exists()), None)
-if TPL is None:
-    raise SystemExit(f"양식 파일을 찾을 수 없다: docs/병원배포/{_NAME}")
-base = pd.read_excel(TPL, sheet_name="데이터")
+# 양식 엑셀(3명 × 초진/졸업)의 '데이터' 시트를 그대로 옮겨 둔 것.
+# 외부 파일을 읽지 않으므로 데이터 파일 없이 clone 한 저장소에서도 그대로 돌아간다.
+_COLS = ("chart_no", "name", "sex", "dob", "visit_type", "visit_date",
+         "dm_diagnosis_age", "dm_duration_months", "treatment_months",
+         "dm_medication", "dm_med_count", "insulin_medication",
+         "hba1c", "fbg", "c_peptide", "total_cholesterol", "triglycerides", "hdl", "ldl", "cr",
+         "sbp", "dbp", "height", "weight", "ast", "alt", "ggt",
+         "he_upro", "he_uglu", "he_ubld", "urine_bil", "urine_uro", "urine_ket", "urine_nit",
+         "urine_ph", "urine_sg", "smoking", "drinking", "exercise", "sleep_hours")
+_ROWS = [
+    ("D1234", "김영수", "남", "1968-03-15", "초진", "2025-01-10", 52,  72, 6, 1, 2, 0,
+     8.7, 168, 0.87, 205, 210, 41, 122, 1.12, 142, 88, 172, 78, 38, 45, 62,
+     2, 3, 1, 1, 2, 1, 0, 5.5, 1.020, 0, 1, 1, 6.5),
+    ("D1234", "김영수", "남", "1968-03-15", "졸업", "2025-07-14", 52,  78, 6, 1, 1, 0,
+     6.1, 104, 1.62, 178, 132, 48, 104, 0.98, 124, 76, 172, 74, 28, 30, 41,
+     1, 1, 1, 1, 2, 1, 0, 6.0, 1.015, 0, 1, 2, 7.0),
+    ("D2345", "이정미", "여", "1962-11-02", "초진", "2025-02-20", 58,  96, 9, 1, 3, 0,
+     9.4, 192, 0.68, 224, 268, 38, 132, 1.38, 156, 94, 158, 68, 42, 51, 78,
+     3, 3, 2, 1, 2, 1, 0, 5.0, 1.025, 0, 0, 0, 5.5),
+    ("D2345", "이정미", "여", "1962-11-02", "졸업", "2025-11-18", 58, 105, 9, 1, 1, 0,
+     6.4, 108, 1.44, 182, 140, 52, 102, 1.02, 128, 78, 158, 63, 30, 33, 44,
+     1, 1, 1, 1, 2, 1, 0, 6.0, 1.018, 0, 0, 2, 7.0),
+    ("D3456", "박준호", "남", "1980-06-25", "초진", "2025-03-05", 42,  36, 3, 1, 2, 0,
+     7.2, 138, 1.24, 188, 165, 45, 110, 0.92, 132, 84, 176, 82, 32, 40, 55,
+     1, 2, 1, 1, 2, 1, 0, 6.0, 1.020, 1, 1, 1, 6.0),
+    ("D3456", "박준호", "남", "1980-06-25", "졸업", "2025-06-10", 42,  39, 3, 0, 0, 0,
+     5.5,  92, 2.41, 170, 118, 55,  92, 0.88, 118, 74, 176, 77, 24, 26, 32,
+     1, 1, 1, 1, 2, 1, 0, 6.5, 1.015, 0, 1, 2, 7.5),
+]
+base = pd.DataFrame(_ROWS, columns=list(_COLS))
+# 엑셀에서 읽었을 때와 같은 datetime 으로 맞춘다 (시나리오 6 이 문자열 형식을 따로 시험한다).
+for _c in ("dob", "visit_date"):
+    base[_c] = pd.to_datetime(base[_c])
 
 def to_xlsx(df, sheet="데이터", extra_sheets=False):
     buf = io.BytesIO()
